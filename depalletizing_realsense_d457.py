@@ -2,7 +2,7 @@
 RealSense D457 mixed-case depalletizing vision pipeline.
 
 This script is designed for an Intel RealSense D457 mounted eye-to-hand,
-top-down over an 1100 mm x 1100 mm pallet. It aligns depth to color, lets the
+top-down over a configurable pallet footprint. It aligns depth to color, lets the
 operator select the pallet ROI, segments tightly packed boxes using a
 zero-shot segmentation model, selects the highest box, deprojects its pick
 center to 3D camera coordinates, and transforms that point into robot base
@@ -62,7 +62,8 @@ except ImportError:
     YOLO = None
 
 
-PALLET_SIZE_MM = 1100.0
+DEFAULT_PALLET_WIDTH_MM = 1100.0
+DEFAULT_PALLET_DEPTH_MM = 1100.0
 D457_DEPTH_FOV_H_DEG = 87.0
 D457_DEPTH_FOV_V_DEG = 58.0
 D457_FOV_TOLERANCE_DEG = 3.0
@@ -109,7 +110,8 @@ class GracefulShutdown:
 
 
 def calculate_mounting_height(
-    pallet_size_mm: float = PALLET_SIZE_MM,
+    pallet_width_mm: float = DEFAULT_PALLET_WIDTH_MM,
+    pallet_depth_mm: float = DEFAULT_PALLET_DEPTH_MM,
     hfov_deg: float = D457_DEPTH_FOV_H_DEG,
     vfov_deg: float = D457_DEPTH_FOV_V_DEG,
     tolerance_deg: float = D457_FOV_TOLERANCE_DEG,
@@ -119,10 +121,11 @@ def calculate_mounting_height(
 
     conservative_hfov = hfov_deg - tolerance_deg
     conservative_vfov = vfov_deg - tolerance_deg
-    half_span = pallet_size_mm / 2.0
-    required_by_width = half_span / math.tan(math.radians(conservative_hfov / 2.0))
-    required_by_height = half_span / math.tan(math.radians(conservative_vfov / 2.0))
-    min_height = max(required_by_width, required_by_height, D457_MIN_OPERATING_RANGE_MM)
+    half_width = pallet_width_mm / 2.0
+    half_depth = pallet_depth_mm / 2.0
+    required_by_width = half_width / math.tan(math.radians(conservative_hfov / 2.0))
+    required_by_depth = half_depth / math.tan(math.radians(conservative_vfov / 2.0))
+    min_height = max(required_by_width, required_by_depth, D457_MIN_OPERATING_RANGE_MM)
     recommended = min_height * (1.0 + margin)
     note = (
         "Use the conservative depth FOV because depth must cover every pick "
@@ -138,7 +141,11 @@ def calculate_mounting_height(
     )
 
 
-def print_mounting_recommendation(recommendation: CameraMountRecommendation) -> None:
+def print_mounting_recommendation(
+    recommendation: CameraMountRecommendation,
+    pallet_width_mm: float,
+    pallet_depth_mm: float,
+) -> None:
     print("\n=== Intel RealSense D457 Mounting Height Recommendation ===")
     print(
         "D457 depth FOV used: "
@@ -146,7 +153,7 @@ def print_mounting_recommendation(recommendation: CameraMountRecommendation) -> 
         f"(conservative: H={recommendation.conservative_hfov_deg:.1f}, "
         f"V={recommendation.conservative_vfov_deg:.1f})"
     )
-    print(f"Pallet footprint: {PALLET_SIZE_MM:.0f} mm x {PALLET_SIZE_MM:.0f} mm")
+    print(f"Pallet footprint: {pallet_width_mm:.0f} mm x {pallet_depth_mm:.0f} mm")
     print(f"Minimum Z from pallet top: {recommendation.min_height_mm:.0f} mm")
     print(f"Recommended Z with 15% margin: {recommendation.recommended_height_mm:.0f} mm")
     print(f"Note: {recommendation.note}\n")
@@ -839,6 +846,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=1280, help="Color/depth stream width")
     parser.add_argument("--height", type=int, default=720, help="Color/depth stream height")
     parser.add_argument("--fps", type=int, default=30, help="Stream FPS")
+    parser.add_argument("--pallet-width-mm", type=float, default=DEFAULT_PALLET_WIDTH_MM, help="Pallet width across the camera horizontal FOV")
+    parser.add_argument("--pallet-depth-mm", type=float, default=DEFAULT_PALLET_DEPTH_MM, help="Pallet depth across the camera vertical FOV")
     parser.add_argument("--imgsz", type=int, default=640, help="Segmentation inference size")
     parser.add_argument("--conf", type=float, default=0.35, help="Segmentation confidence threshold")
     parser.add_argument("--iou", type=float, default=0.70, help="Segmentation NMS IoU threshold")
@@ -1298,8 +1307,11 @@ def synthetic_demo_frame(t: float) -> tuple[np.ndarray, list[Detection], Optiona
 
 def main() -> int:
     args = parse_args()
-    recommendation = calculate_mounting_height()
-    print_mounting_recommendation(recommendation)
+    recommendation = calculate_mounting_height(
+        pallet_width_mm=args.pallet_width_mm,
+        pallet_depth_mm=args.pallet_depth_mm,
+    )
+    print_mounting_recommendation(recommendation, args.pallet_width_mm, args.pallet_depth_mm)
 
     print("Launching operator console. Click DEMO ON/OFF or press d to toggle.")
     return run_operator_console(args, recommendation)

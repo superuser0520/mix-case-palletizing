@@ -28,6 +28,10 @@ const boxes = [
   { id: 9, x: 66, y: 63, w: 26, h: 19, z: 874, color: '#F6A06E' },
 ];
 
+const D457_DEPTH_FOV = { h: 87, v: 58, tolerance: 3 };
+const D457_MIN_RANGE_MM = 600;
+const MOUNT_MARGIN = 0.15;
+
 function isBoxInsideRoi(item, roi) {
   const centerX = item.x + item.w / 2;
   const centerY = item.y + item.h / 2;
@@ -44,6 +48,20 @@ function chooseHighest(items) {
   }, items[0]);
 }
 
+function calculateMountingHeight(pallet) {
+  const conservativeH = D457_DEPTH_FOV.h - D457_DEPTH_FOV.tolerance;
+  const conservativeV = D457_DEPTH_FOV.v - D457_DEPTH_FOV.tolerance;
+  const requiredByWidth = (pallet.width / 2) / Math.tan((conservativeH / 2) * Math.PI / 180);
+  const requiredByDepth = (pallet.depth / 2) / Math.tan((conservativeV / 2) * Math.PI / 180);
+  const minHeight = Math.max(requiredByWidth, requiredByDepth, D457_MIN_RANGE_MM);
+  return {
+    minHeight: Math.round(minHeight),
+    recommendedHeight: Math.round(minHeight * (1 + MOUNT_MARGIN)),
+    conservativeH,
+    conservativeV,
+  };
+}
+
 function App() {
   const [view, setView] = useState('vision');
   const [demoMode, setDemoMode] = useState(true);
@@ -52,8 +70,10 @@ function App() {
   const [confirmed, setConfirmed] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [roi, setRoi] = useState({ x: 6, y: 6, w: 88, h: 88 });
+  const [pallet, setPallet] = useState({ width: 1100, depth: 1100 });
   const [cameraStream, setCameraStream] = useState(null);
 
+  const mount = useMemo(() => calculateMountingHeight(pallet), [pallet]);
   const detectedBoxes = useMemo(() => boxes.filter((item) => isBoxInsideRoi(item, roi)), [roi]);
   const highestBox = useMemo(() => chooseHighest(detectedBoxes), [detectedBoxes]);
   const selectedBox = detectedBoxes.find((item) => item.id === selectedId) ?? null;
@@ -204,12 +224,12 @@ function App() {
               />
             </div>
 
-            <Metrics captured={captured} detectedCount={detectedBoxes.length} />
+            <Metrics captured={captured} detectedCount={detectedBoxes.length} mount={mount} />
           </>
         )}
 
         {view === 'queue' && <PickQueue candidate={candidate} confirmed={confirmed} />}
-        {view === 'calibration' && <Calibration roi={roi} />}
+        {view === 'calibration' && <Calibration roi={roi} pallet={pallet} setPallet={setPallet} mount={mount} />}
       </section>
     </main>
   );
@@ -396,14 +416,51 @@ function PickQueue({ candidate, confirmed }) {
   );
 }
 
-function Calibration({ roi }) {
+function Calibration({ roi, pallet, setPallet, mount }) {
+  function updatePallet(key, value) {
+    const parsed = Number(value);
+    setPallet((current) => ({
+      ...current,
+      [key]: Number.isFinite(parsed) ? Math.max(100, Math.min(3000, parsed)) : current[key],
+    }));
+  }
+
   return (
     <section className="calibration-grid">
       <article className="cal-card">
         <p className="label">Mounting</p>
         <h3>Recommended height</h3>
-        <strong>1215 mm</strong>
-        <p>Computed from conservative D457 depth FOV for an 1100 mm pallet.</p>
+        <strong>{mount.recommendedHeight} mm</strong>
+        <p>Minimum {mount.minHeight} mm from pallet top, using conservative D457 depth FOV H {mount.conservativeH} deg / V {mount.conservativeV} deg.</p>
+      </article>
+      <article className="cal-card">
+        <p className="label">Pallet footprint</p>
+        <h3>Dimensions</h3>
+        <div className="dimension-grid">
+          <label>
+            Width mm
+            <input
+              type="number"
+              min="100"
+              max="3000"
+              step="10"
+              value={pallet.width}
+              onChange={(event) => updatePallet('width', event.target.value)}
+            />
+          </label>
+          <label>
+            Depth mm
+            <input
+              type="number"
+              min="100"
+              max="3000"
+              step="10"
+              value={pallet.depth}
+              onChange={(event) => updatePallet('depth', event.target.value)}
+            />
+          </label>
+        </div>
+        <p>Width is across the camera horizontal FOV. Depth is across the camera vertical FOV.</p>
       </article>
       <article className="cal-card">
         <p className="label">ROI</p>
@@ -420,16 +477,17 @@ function Calibration({ roi }) {
           [ 0.000  0.000  1.000  0.0 ]<br />
           [ 0.000  0.000  0.000  1.0 ]
         </code>
+        <p>Example: camera point [137, 27, 756, 1] multiplied by this 4x4 matrix returns robot base XYZ. Replace identity with your calibrated eye-to-hand transform before robot deployment.</p>
       </article>
     </section>
   );
 }
 
-function Metrics({ captured, detectedCount }) {
+function Metrics({ captured, detectedCount, mount }) {
   return (
     <section className="metrics">
-      <Metric label="Min mount Z" value="1057 mm" tone="lavender" />
-      <Metric label="Recommended Z" value="1215 mm" tone="lime" />
+      <Metric label="Min mount Z" value={`${mount.minHeight} mm`} tone="lavender" />
+      <Metric label="Recommended Z" value={`${mount.recommendedHeight} mm`} tone="lime" />
       <Metric label="Detected boxes" value={captured ? String(detectedCount) : '0'} tone="graphite" />
       <Metric label="Decision mode" value="One-shot" tone="red" />
     </section>
