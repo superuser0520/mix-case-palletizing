@@ -268,11 +268,40 @@ button {
   cursor: default;
 }
 
+.roi-mask {
+  position: absolute;
+  background: rgba(8, 7, 7, 0.58);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.roi-mask.top,
+.roi-mask.bottom {
+  left: 0;
+  right: 0;
+}
+
+.roi-mask.top {
+  top: 0;
+}
+
+.roi-mask.left {
+  left: 0;
+}
+
+.roi-mask.right {
+  right: 0;
+}
+
+.roi-mask.bottom {
+  bottom: 0;
+}
+
 .roi-box {
   position: absolute;
   border: 3px solid #ffffff;
   border-radius: 19px;
-  box-shadow: 0 0 0 999px rgba(8, 7, 7, 0.07), 0 0 0 4px rgba(185, 158, 248, 0.2);
+  box-shadow: 0 0 0 4px rgba(185, 158, 248, 0.32);
   pointer-events: none;
   z-index: 4;
 }
@@ -637,6 +666,25 @@ button {
 
   .queue-row em {
     justify-self: start;
+  }
+}
+
+@media (min-width: 900px) and (max-width: 1120px) {
+  .grid {
+    grid-template-columns: minmax(500px, 1fr) 320px;
+  }
+
+  .candidate-panel {
+    padding: 16px;
+  }
+
+  .ring-card {
+    padding: 14px;
+  }
+
+  .ring {
+    width: 68px;
+    height: 68px;
   }
 }
 

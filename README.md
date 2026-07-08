@@ -57,3 +57,15 @@ depth, and proposes the highest box.
 
 If camera mode reports blocked, check D457 power, cable/GMSL adapter, firmware,
 and whether another process owns the camera.
+
+## Industrial Deployment Notes
+
+- Treat the ROI as a hard safety/filtering boundary. RGB and depth outside the
+  ROI are masked before segmentation, and generated masks are intersected with
+  the ROI before depth and robot coordinates are computed.
+- A capture with zero in-ROI detections must not create a robot pick. Redraw the
+  ROI, inspect pallet placement, or clear camera/lighting faults before retrying.
+- Keep the production flow one-shot: capture, freeze, review, optionally override
+  to another in-ROI box, then confirm. Do not stream robot targets continuously.
+- Save a validated ROI for the cell after commissioning and re-check it after
+  camera mount, pallet guide, conveyor, or lighting changes.

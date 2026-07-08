@@ -28,6 +28,22 @@ const boxes = [
   { id: 9, x: 66, y: 63, w: 26, h: 19, z: 874, color: '#F6A06E' },
 ];
 
+function isBoxInsideRoi(item, roi) {
+  const centerX = item.x + item.w / 2;
+  const centerY = item.y + item.h / 2;
+  return centerX >= roi.x && centerX <= roi.x + roi.w && centerY >= roi.y && centerY <= roi.y + roi.h;
+}
+
+function chooseHighest(items) {
+  if (!items.length) return null;
+  return items.reduce((best, item) => {
+    if (item.z !== best.z) return item.z < best.z ? item : best;
+    const itemCenter = Math.hypot(item.x + item.w / 2 - 50, item.y + item.h / 2 - 50);
+    const bestCenter = Math.hypot(best.x + best.w / 2 - 50, best.y + best.h / 2 - 50);
+    return itemCenter < bestCenter ? item : best;
+  }, items[0]);
+}
+
 function App() {
   const [view, setView] = useState('vision');
   const [demoMode, setDemoMode] = useState(true);
@@ -38,8 +54,9 @@ function App() {
   const [roi, setRoi] = useState({ x: 6, y: 6, w: 88, h: 88 });
   const [cameraStream, setCameraStream] = useState(null);
 
-  const highestBox = useMemo(() => boxes.reduce((best, item) => (item.z < best.z ? item : best), boxes[0]), []);
-  const selectedBox = boxes.find((item) => item.id === selectedId) ?? null;
+  const detectedBoxes = useMemo(() => boxes.filter((item) => isBoxInsideRoi(item, roi)), [roi]);
+  const highestBox = useMemo(() => chooseHighest(detectedBoxes), [detectedBoxes]);
+  const selectedBox = detectedBoxes.find((item) => item.id === selectedId) ?? null;
   const candidate = selectedBox ?? (captured ? highestBox : null);
 
   useEffect(() => {
@@ -92,13 +109,13 @@ function App() {
   function capture() {
     setCaptured(true);
     setConfirmed(false);
-    setSelectedId(highestBox.id);
+    setSelectedId(highestBox?.id ?? null);
   }
 
   function nextCandidate() {
-    if (!captured) return;
-    const currentIndex = boxes.findIndex((item) => item.id === (candidate?.id ?? highestBox.id));
-    setSelectedId(boxes[(currentIndex + 1) % boxes.length].id);
+    if (!captured || !detectedBoxes.length) return;
+    const currentIndex = detectedBoxes.findIndex((item) => item.id === (candidate?.id ?? highestBox?.id));
+    setSelectedId(detectedBoxes[(currentIndex + 1) % detectedBoxes.length].id);
     setConfirmed(false);
   }
 
@@ -158,6 +175,7 @@ function App() {
                 <PalletPreview
                   captured={captured}
                   selectedId={candidate?.id ?? null}
+                  detectedBoxes={detectedBoxes}
                   demoMode={demoMode}
                   cameraStream={cameraStream}
                   cameraStatus={cameraStatus}
@@ -178,14 +196,15 @@ function App() {
                 captured={captured}
                 confirmed={confirmed}
                 candidate={candidate}
+                detectedCount={detectedBoxes.length}
                 onCapture={capture}
                 onNext={nextCandidate}
-                onConfirm={() => captured && setConfirmed(true)}
+                onConfirm={() => captured && candidate && setConfirmed(true)}
                 onRedrag={resetPick}
               />
             </div>
 
-            <Metrics captured={captured} />
+            <Metrics captured={captured} detectedCount={detectedBoxes.length} />
           </>
         )}
 
@@ -205,19 +224,20 @@ function NavButton({ active, icon, label, onClick }) {
   );
 }
 
-function CandidatePanel({ captured, confirmed, candidate, onCapture, onNext, onConfirm, onRedrag }) {
+function CandidatePanel({ captured, confirmed, candidate, detectedCount, onCapture, onNext, onConfirm, onRedrag }) {
+  const emptyCapture = captured && !candidate;
   return (
     <aside className="candidate-panel">
       <div className="candidate-top">
         <p className="label">Pick Candidate</p>
-        <h3>{candidate ? `Box ${candidate.id}` : 'No capture yet'}</h3>
-        <p>{candidate ? 'Highest box proposed. Operator may override.' : 'Click Capture to evaluate the pallet.'}</p>
+        <h3>{candidate ? `Box ${candidate.id}` : emptyCapture ? 'No box in ROI' : 'No capture yet'}</h3>
+        <p>{candidate ? 'Highest in-ROI box proposed. Operator may override.' : emptyCapture ? 'Redrag ROI or inspect pallet placement before confirming.' : 'Click Capture to evaluate the pallet ROI.'}</p>
       </div>
 
       <div className="ring-card">
         <div className="ring"><Crosshair size={32} /></div>
         <div>
-          <span>Highest box</span>
+          <span>{captured ? `${detectedCount} in ROI` : 'Highest box'}</span>
           <strong>{candidate ? `${candidate.z} mm` : '--'}</strong>
         </div>
       </div>
@@ -229,8 +249,8 @@ function CandidatePanel({ captured, confirmed, candidate, onCapture, onNext, onC
 
       <div className="actions">
         <button className="primary" onClick={onCapture}><MousePointer2 size={18} />Capture</button>
-        <button className="secondary" disabled={!captured} onClick={onNext}><ChevronRight size={18} />Next</button>
-        <button className="confirm" disabled={!captured} onClick={onConfirm}><Check size={18} />Confirm</button>
+        <button className="secondary" disabled={!captured || detectedCount < 2} onClick={onNext}><ChevronRight size={18} />Next</button>
+        <button className="confirm" disabled={!captured || !candidate} onClick={onConfirm}><Check size={18} />Confirm</button>
         <button className="ghost" onClick={onRedrag}><RefreshCw size={18} />Redrag ROI</button>
       </div>
 
@@ -244,7 +264,7 @@ function CandidatePanel({ captured, confirmed, candidate, onCapture, onNext, onC
   );
 }
 
-function PalletPreview({ captured, selectedId, onSelect, demoMode, cameraStream, cameraStatus, roi, setRoi }) {
+function PalletPreview({ captured, selectedId, detectedBoxes, onSelect, demoMode, cameraStream, cameraStatus, roi, setRoi }) {
   const stageRef = useRef(null);
   const videoRef = useRef(null);
   const dragStart = useRef(null);
@@ -268,6 +288,9 @@ function PalletPreview({ captured, selectedId, onSelect, demoMode, cameraStream,
 
   function startDrag(event) {
     if (captured) return;
+    if (event.currentTarget.setPointerCapture) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
     const point = pointFromEvent(event);
     dragStart.current = point;
     setDraftRoi({ x: point.x, y: point.y, w: 0, h: 0 });
@@ -283,7 +306,10 @@ function PalletPreview({ captured, selectedId, onSelect, demoMode, cameraStream,
     setDraftRoi({ x, y, w, h });
   }
 
-  function finishDrag() {
+  function finishDrag(event) {
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
     if (draftRoi && draftRoi.w > 8 && draftRoi.h > 8) {
       setRoi(draftRoi);
     }
@@ -306,6 +332,11 @@ function PalletPreview({ captured, selectedId, onSelect, demoMode, cameraStream,
         {!demoMode && cameraStream && <video ref={videoRef} className="camera-feed" autoPlay muted playsInline />}
         {!demoMode && !cameraStream && <div className="camera-empty">{cameraStatus}. Use Demo On for synthetic pallet preview.</div>}
 
+        <div className="roi-mask top" style={{ height: `${shownRoi.y}%` }} />
+        <div className="roi-mask left" style={{ top: `${shownRoi.y}%`, width: `${shownRoi.x}%`, height: `${shownRoi.h}%` }} />
+        <div className="roi-mask right" style={{ top: `${shownRoi.y}%`, left: `${shownRoi.x + shownRoi.w}%`, height: `${shownRoi.h}%` }} />
+        <div className="roi-mask bottom" style={{ top: `${shownRoi.y + shownRoi.h}%` }} />
+
         <div
           className="roi-box"
           style={{
@@ -316,7 +347,7 @@ function PalletPreview({ captured, selectedId, onSelect, demoMode, cameraStream,
           }}
         />
 
-        {demoMode && boxes.map((item) => {
+        {demoMode && detectedBoxes.map((item) => {
           const active = captured && item.id === selectedId;
           return (
             <button
@@ -336,14 +367,14 @@ function PalletPreview({ captured, selectedId, onSelect, demoMode, cameraStream,
           );
         })}
       </div>
-      {!captured && <div className="capture-hint">Drag ROI directly on the preview. Processing starts only when Capture is pressed.</div>}
+      {!captured && <div className="capture-hint">Outside the ROI is masked out. Capture only evaluates the drag zone.</div>}
     </div>
   );
 }
 
 function PickQueue({ candidate, confirmed }) {
   const rows = [
-    { step: 'Current candidate', box: candidate ? `Box ${candidate.id}` : 'Waiting', z: candidate ? `${candidate.z} mm` : '--', status: confirmed ? 'Confirmed' : 'Review' },
+    { step: 'Current candidate', box: candidate ? `Box ${candidate.id}` : 'Waiting', z: candidate ? `${candidate.z} mm` : '--', status: candidate ? (confirmed ? 'Confirmed' : 'Review') : 'Empty' },
     { step: 'Next cycle', box: 'Pending capture', z: '--', status: 'Idle' },
     { step: 'Robot handoff', box: confirmed ? `Box ${candidate.id}` : 'No pick', z: confirmed ? `${candidate.z} mm` : '--', status: confirmed ? 'Ready' : 'Blocked' },
   ];
@@ -394,12 +425,12 @@ function Calibration({ roi }) {
   );
 }
 
-function Metrics({ captured }) {
+function Metrics({ captured, detectedCount }) {
   return (
     <section className="metrics">
       <Metric label="Min mount Z" value="1057 mm" tone="lavender" />
       <Metric label="Recommended Z" value="1215 mm" tone="lime" />
-      <Metric label="Detected boxes" value={captured ? '9' : '0'} tone="graphite" />
+      <Metric label="Detected boxes" value={captured ? String(detectedCount) : '0'} tone="graphite" />
       <Metric label="Decision mode" value="One-shot" tone="red" />
     </section>
   );
