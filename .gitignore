@@ -10,3 +10,9 @@ runs/
 *.onnx
 *.engine
 roi_config.json
+node_modules/
+dist/
+web-demo/node_modules/
+web-demo/dist/
+web-demo/*screenshot.png
+web-demo/desktop-confirmed.png
