@@ -9,7 +9,8 @@ D457 depalletizing station.
 - Demo/camera toggle with guided operator workflow.
 - Drag ROI selection directly in the live/demo view.
 - One-shot capture cycle: capture once, freeze result, review candidate, confirm.
-- FastSAM/YOLO segmentation path for mixed cardboard boxes.
+- FastSAM/YOLO zero-shot segmentation path for mixed cardboard boxes.
+- Optional depth-edge segmentation fallback with no teaching/training.
 - RealSense depth-to-color alignment with `rs.align(rs.stream.color)`.
 - Highest-box selection by smallest Z distance, with center-of-FOV tie-break.
 - 2D pixel center to 3D camera coordinates via RealSense deprojection.
@@ -40,6 +41,20 @@ python depalletizing_realsense_d457.py --model FastSAM-s.pt --device 0 --half --
 
 Use `--device cpu` if no CUDA GPU is available.
 
+Segmentation choices:
+
+```powershell
+# Default: infer FastSAM or YOLO from the model file
+python depalletizing_realsense_d457.py --segmentation-backend auto
+
+# Explicit zero-shot AI options, no custom teaching dataset required
+python depalletizing_realsense_d457.py --segmentation-backend fastsam --model FastSAM-s.pt
+python depalletizing_realsense_d457.py --segmentation-backend yolo --model yolov8n-seg.pt
+
+# Depth-driven fallback, useful for scenes with clear height discontinuities
+python depalletizing_realsense_d457.py --segmentation-backend depth
+```
+
 ## Operator Flow
 
 1. Drag the pallet ROI.
@@ -52,8 +67,9 @@ Use `--device cpu` if no CUDA GPU is available.
 ## Real Mode Notes
 
 Camera mode idles until **CAPTURE** is pressed. On capture, the app starts the
-RealSense pipeline, aligns depth to color, runs segmentation, computes per-box
-depth, and proposes the highest box.
+RealSense pipeline, aligns depth to color, masks outside the ROI, runs the
+selected segmentation backend, computes per-box depth, rejects masks without
+valid depth, and proposes the highest box.
 
 If camera mode reports blocked, check D457 power, cable/GMSL adapter, firmware,
 and whether another process owns the camera.
@@ -68,10 +84,11 @@ RealSense SDK.
 The real depalletizing processing runs in `depalletizing_realsense_d457.py` on
 the Windows PC connected to the RealSense camera. That Python process owns the
 D457 stream, performs `rs.align(rs.stream.color)`, applies the ROI mask, runs
-FastSAM/YOLO segmentation, computes depth and 3D camera coordinates, applies the
-hand-eye transform, and prints/returns the robot target. For deployment, run the
-Python process as the vision service/operator console, or connect the web UI to
-it through a local API/WebSocket bridge.
+FastSAM/YOLO zero-shot segmentation or depth-edge segmentation, computes depth
+and 3D camera coordinates, applies the hand-eye transform, and prints/returns
+the robot target. For deployment, run the Python process as the vision
+service/operator console, or connect the web UI to it through a local
+API/WebSocket bridge.
 
 ## Hand-Eye Matrix Example
 

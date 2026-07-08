@@ -14,6 +14,7 @@ Install:
 Recommended model:
     FastSAM-s.pt or FastSAM-x.pt from Ultralytics. The script defaults to
     FastSAM-s.pt for speed. YOLOv8 segmentation weights can also be supplied.
+    Use --segmentation-backend depth for a non-AI depth-edge fallback.
 
 Controls:
     r  - reselect pallet ROI
@@ -376,11 +377,15 @@ def apply_roi(
     return color_masked, depth_masked, mask
 
 
-def load_segmentation_model(model_path: str):
+def load_segmentation_model(model_path: str, backend: str):
+    if backend == "depth":
+        return None, "depth-edge"
     require_ultralytics()
     model_name = Path(model_path).name.lower()
-    if "fastsam" in model_name:
+    if backend == "fastsam" or (backend == "auto" and "fastsam" in model_name):
         return FastSAM(model_path), "fastsam"
+    if backend == "yolo" or backend == "auto":
+        return YOLO(model_path), "yolo-seg"
     return YOLO(model_path), "yolo-seg"
 
 
@@ -428,6 +433,50 @@ def segment_boxes(
         area = int(cv2.countNonZero(mask))
         if area >= min_area_px:
             masks.append(mask)
+
+    return non_max_mask_filter(masks, max_overlap=0.88)
+
+
+def segment_boxes_from_depth(
+    depth_raw: np.ndarray,
+    roi_mask: np.ndarray,
+    depth_scale: float,
+    min_area_px: int,
+    edge_threshold_mm: float = 35.0,
+) -> list[np.ndarray]:
+    """Segment candidate box top regions from depth discontinuities.
+
+    This is a non-teaching fallback. It is useful when the scene has clear
+    height/depth breaks, but zero-shot RGB segmentation should remain the
+    preferred mode for tightly packed boxes of similar height.
+    """
+
+    valid = (depth_raw > 0) & (roi_mask > 0)
+    if int(np.count_nonzero(valid)) < min_area_px:
+        return []
+
+    depth_mm = depth_raw.astype(np.float32) * float(depth_scale) * 1000.0
+    valid_depth = depth_mm[valid]
+    low, high = np.percentile(valid_depth, [2, 98])
+    clipped = np.clip(depth_mm, low, high)
+    clipped[~valid] = high
+    smooth = cv2.medianBlur(clipped.astype(np.float32), 5)
+    grad_x = cv2.Sobel(smooth, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(smooth, cv2.CV_32F, 0, 1, ksize=3)
+    gradient = cv2.magnitude(grad_x, grad_y)
+    interior = ((gradient < edge_threshold_mm) & valid).astype(np.uint8) * 255
+    interior = cv2.bitwise_and(interior, roi_mask)
+    interior = clean_mask(interior)
+
+    num_labels, labels, stats, _centroids = cv2.connectedComponentsWithStats(interior, 8)
+    masks: list[np.ndarray] = []
+    for label in range(1, num_labels):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area < min_area_px:
+            continue
+        mask = np.zeros(depth_raw.shape[:2], dtype=np.uint8)
+        mask[labels == label] = 255
+        masks.append(clean_mask(mask))
 
     return non_max_mask_filter(masks, max_overlap=0.88)
 
@@ -599,7 +648,7 @@ def draw_operator_ui(
     cv2.rectangle(overlay, (0, 0), (panel_w, out.shape[0]), (16, 22, 30), -1)
     cv2.addWeighted(overlay, 0.82, out, 0.18, 0, out)
 
-    put_text(out, "D457 Depalletizing", (24, 36), 0.82, (245, 248, 252), 2)
+    put_text(out, "Pallet Sight", (24, 36), 0.82, (245, 248, 252), 2)
     put_text(out, "Mixed case top-down vision", (24, 64), 0.50, (164, 176, 190), 1)
     draw_chip(out, (24, 88), "LIVE", (43, 185, 126))
     draw_chip(out, (92, 88), model_type.upper(), (82, 153, 255))
@@ -843,6 +892,12 @@ def parse_args() -> argparse.Namespace:
         description="Intel RealSense D457 mixed-case depalletizing vision pipeline"
     )
     parser.add_argument("--model", default="FastSAM-s.pt", help="FastSAM or YOLOv8-seg model path")
+    parser.add_argument(
+        "--segmentation-backend",
+        choices=("auto", "fastsam", "yolo", "depth"),
+        default="auto",
+        help="Segmentation mode: auto/FastSAM/YOLO zero-shot AI, or depth-edge fallback",
+    )
     parser.add_argument("--width", type=int, default=1280, help="Color/depth stream width")
     parser.add_argument("--height", type=int, default=720, help="Color/depth stream height")
     parser.add_argument("--fps", type=int, default=30, help="Stream FPS")
@@ -932,9 +987,9 @@ def run_operator_console(args: argparse.Namespace, recommendation: CameraMountRe
             state["drag_start"] = None
             state["drag_current"] = None
 
-    cv2.namedWindow("D457 Depalletizing Operator Console", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("D457 Depalletizing Operator Console", 1280, 720)
-    cv2.setMouseCallback("D457 Depalletizing Operator Console", on_mouse)
+    cv2.namedWindow("Pallet Sight Operator Console", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Pallet Sight Operator Console", 1280, 720)
+    cv2.setMouseCallback("Pallet Sight Operator Console", on_mouse)
 
     start = time.perf_counter()
     last_time = time.perf_counter()
@@ -989,7 +1044,7 @@ def run_operator_console(args: argparse.Namespace, recommendation: CameraMountRe
             drag_roi=drag_roi,
             mouse_pos=state["mouse_pos"],
         )
-        cv2.imshow("D457 Depalletizing Operator Console", display)
+        cv2.imshow("Pallet Sight Operator Console", display)
         key = cv2.waitKey(30) & 0xFF
         if key == ord("q") or key == 27:
             break
@@ -1129,17 +1184,20 @@ def ensure_real_resources(args: argparse.Namespace, state: dict) -> None:
 
     try:
         missing = []
-        if FastSAM is None or YOLO is None:
+        if args.segmentation_backend != "depth" and (FastSAM is None or YOLO is None):
             missing.append("ultralytics (`pip install ultralytics`)")
         if rs is None:
             missing.append("pyrealsense2 (`pip install pyrealsense2`)")
         if missing:
             raise RuntimeError("Missing dependencies: " + "; ".join(missing))
 
-        if state["model"] is None:
-            model, model_type = load_segmentation_model(args.model)
+        if state["model"] is None and state["model_type"] != "depth-edge":
+            model, model_type = load_segmentation_model(args.model, args.segmentation_backend)
             state["model"] = model
             state["model_type"] = model_type
+        if args.segmentation_backend == "depth":
+            state["model"] = None
+            state["model_type"] = "depth-edge"
 
         if state["pipeline"] is None:
             pipeline, align = setup_realsense(args.width, args.height, args.fps)
@@ -1178,7 +1236,7 @@ def real_frame_or_status(
     args: argparse.Namespace,
     state: dict,
 ) -> tuple[np.ndarray, list[Detection], Optional[int], Optional[tuple[int, int, int, int]], str]:
-    if state["pipeline"] is None or state["model"] is None:
+    if state["pipeline"] is None or (state["model"] is None and state["model_type"] != "depth-edge"):
         return status_frame(state["last_error"]), [], None, None, str(state["model_type"])
 
     try:
@@ -1192,18 +1250,26 @@ def real_frame_or_status(
         color = np.asanyarray(color_frame.get_data())
         depth = np.asanyarray(aligned_depth.get_data())
         color_roi, depth_roi, roi_mask = apply_roi(color, depth, state["roi"])
-        masks = segment_boxes(
-            model=state["model"],
-            model_type=str(state["model_type"]),
-            color_bgr=color_roi,
-            roi_mask=roi_mask,
-            imgsz=args.imgsz,
-            conf=args.conf,
-            iou=args.iou,
-            min_area_px=args.min_area,
-            device=args.device,
-            half=args.half,
-        )
+        if state["model_type"] == "depth-edge":
+            masks = segment_boxes_from_depth(
+                depth_raw=depth_roi,
+                roi_mask=roi_mask,
+                depth_scale=float(state["depth_scale"]),
+                min_area_px=args.min_area,
+            )
+        else:
+            masks = segment_boxes(
+                model=state["model"],
+                model_type=str(state["model_type"]),
+                color_bgr=color_roi,
+                roi_mask=roi_mask,
+                imgsz=args.imgsz,
+                conf=args.conf,
+                iou=args.iou,
+                min_area_px=args.min_area,
+                device=args.device,
+                half=args.half,
+            )
         frame_center = (color.shape[1] / 2.0, color.shape[0] / 2.0)
         detections, best_idx = build_detections(
             masks=masks,

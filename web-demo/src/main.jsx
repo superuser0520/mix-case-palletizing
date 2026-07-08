@@ -31,6 +31,7 @@ const boxes = [
 const D457_DEPTH_FOV = { h: 87, v: 58, tolerance: 3 };
 const D457_MIN_RANGE_MM = 600;
 const MOUNT_MARGIN = 0.15;
+const DEFAULT_PALLET = { width: '1100', depth: '1100' };
 
 function isBoxInsideRoi(item, roi) {
   const centerX = item.x + item.w / 2;
@@ -48,17 +49,26 @@ function chooseHighest(items) {
   }, items[0]);
 }
 
+function parseDimension(value, fallback) {
+  const parsed = Number(String(value).trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function calculateMountingHeight(pallet) {
   const conservativeH = D457_DEPTH_FOV.h - D457_DEPTH_FOV.tolerance;
   const conservativeV = D457_DEPTH_FOV.v - D457_DEPTH_FOV.tolerance;
-  const requiredByWidth = (pallet.width / 2) / Math.tan((conservativeH / 2) * Math.PI / 180);
-  const requiredByDepth = (pallet.depth / 2) / Math.tan((conservativeV / 2) * Math.PI / 180);
+  const palletWidth = parseDimension(pallet.width, Number(DEFAULT_PALLET.width));
+  const palletDepth = parseDimension(pallet.depth, Number(DEFAULT_PALLET.depth));
+  const requiredByWidth = (palletWidth / 2) / Math.tan((conservativeH / 2) * Math.PI / 180);
+  const requiredByDepth = (palletDepth / 2) / Math.tan((conservativeV / 2) * Math.PI / 180);
   const minHeight = Math.max(requiredByWidth, requiredByDepth, D457_MIN_RANGE_MM);
   return {
     minHeight: Math.round(minHeight),
     recommendedHeight: Math.round(minHeight * (1 + MOUNT_MARGIN)),
     conservativeH,
     conservativeV,
+    palletWidth,
+    palletDepth,
   };
 }
 
@@ -70,7 +80,7 @@ function App() {
   const [confirmed, setConfirmed] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [roi, setRoi] = useState({ x: 6, y: 6, w: 88, h: 88 });
-  const [pallet, setPallet] = useState({ width: 1100, depth: 1100 });
+  const [pallet, setPallet] = useState(DEFAULT_PALLET);
   const [cameraStream, setCameraStream] = useState(null);
 
   const mount = useMemo(() => calculateMountingHeight(pallet), [pallet]);
@@ -145,7 +155,7 @@ function App() {
         <div className="brand">
           <div className="brand-mark"><ScanLine size={22} /></div>
           <div>
-            <h1>PalletSight D457</h1>
+            <h1>Pallet Sight</h1>
             <p>One-shot depalletizing vision</p>
           </div>
         </div>
@@ -418,10 +428,9 @@ function PickQueue({ candidate, confirmed }) {
 
 function Calibration({ roi, pallet, setPallet, mount }) {
   function updatePallet(key, value) {
-    const parsed = Number(value);
     setPallet((current) => ({
       ...current,
-      [key]: Number.isFinite(parsed) ? Math.max(100, Math.min(3000, parsed)) : current[key],
+      [key]: value,
     }));
   }
 
@@ -431,7 +440,7 @@ function Calibration({ roi, pallet, setPallet, mount }) {
         <p className="label">Mounting</p>
         <h3>Recommended height</h3>
         <strong>{mount.recommendedHeight} mm</strong>
-        <p>Minimum {mount.minHeight} mm from pallet top, using conservative D457 depth FOV H {mount.conservativeH} deg / V {mount.conservativeV} deg.</p>
+        <p>Minimum {mount.minHeight} mm from pallet top for {mount.palletWidth} x {mount.palletDepth} mm, using conservative D457 depth FOV H {mount.conservativeH} deg / V {mount.conservativeV} deg.</p>
       </article>
       <article className="cal-card">
         <p className="label">Pallet footprint</p>
@@ -440,10 +449,8 @@ function Calibration({ roi, pallet, setPallet, mount }) {
           <label>
             Width mm
             <input
-              type="number"
-              min="100"
-              max="3000"
-              step="10"
+              type="text"
+              inputMode="decimal"
               value={pallet.width}
               onChange={(event) => updatePallet('width', event.target.value)}
             />
@@ -451,16 +458,20 @@ function Calibration({ roi, pallet, setPallet, mount }) {
           <label>
             Depth mm
             <input
-              type="number"
-              min="100"
-              max="3000"
-              step="10"
+              type="text"
+              inputMode="decimal"
               value={pallet.depth}
               onChange={(event) => updatePallet('depth', event.target.value)}
             />
           </label>
         </div>
         <p>Width is across the camera horizontal FOV. Depth is across the camera vertical FOV.</p>
+      </article>
+      <article className="cal-card">
+        <p className="label">Processing</p>
+        <h3>Depth + zero-shot AI</h3>
+        <strong>Non-teaching</strong>
+        <p>Real mode aligns depth to color, masks outside the ROI, segments boxes with FastSAM or YOLOv8-seg, then uses depth for every candidate height and 3D pick point. A depth-edge fallback can be selected from the Python CLI.</p>
       </article>
       <article className="cal-card">
         <p className="label">ROI</p>
