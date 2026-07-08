@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.log
+.venv/
+venv/
+env/
+.env
+runs/
+*.pt
+*.onnx
+*.engine
+roi_config.json
