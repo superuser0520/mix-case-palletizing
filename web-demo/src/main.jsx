@@ -454,6 +454,18 @@ function PalletPreview({ captured, selectedId, detectedBoxes, onSelect, demoMode
   }
 
   const shownRoi = draftRoi ?? roi;
+  const outlineFor = (item) => {
+    if (Array.isArray(item.outline) && item.outline.length >= 3) {
+      return item.outline;
+    }
+    return [
+      { x: item.x, y: item.y },
+      { x: item.x + item.w, y: item.y },
+      { x: item.x + item.w, y: item.y + item.h },
+      { x: item.x, y: item.y + item.h },
+    ];
+  };
+  const pointString = (points) => points.map((point) => `${point.x},${point.y}`).join(' ');
 
   return (
     <div className="pallet-stage">
@@ -487,25 +499,31 @@ function PalletPreview({ captured, selectedId, detectedBoxes, onSelect, demoMode
           }}
         />
 
-        {captured && detectedBoxes.map((item) => {
-          const active = captured && item.id === selectedId;
-          return (
-            <button
-              key={item.id}
-              className={`box-tile ${demoMode ? 'demo' : 'actual'} ${active ? 'active' : ''}`}
-              style={{
-                left: `${item.x}%`,
-                top: `${item.y}%`,
-                width: `${item.w}%`,
-                height: `${item.h}%`,
-                '--box-color': item.color,
-              }}
-                onClick={() => onSelect(item.id)}
-            >
-              <span>Box {item.id} - Z {item.z}mm{item.lengthMm && item.widthMm ? ` - ${item.lengthMm}x${item.widthMm}mm` : ''}</span>
-            </button>
-          );
-        })}
+        {captured && (
+          <svg className="box-outline-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Detected box outlines">
+            {detectedBoxes.map((item) => {
+              const active = item.id === selectedId;
+              const outline = outlineFor(item);
+              const labelX = item.x + item.w / 2;
+              const labelY = Math.max(5, item.y - 2);
+              const label = active
+                ? `Box ${item.id} - ${item.z}mm${item.lengthMm && item.widthMm ? ` - ${item.lengthMm}x${item.widthMm}mm` : ''}`
+                : `#${item.id}`;
+              return (
+                <g
+                  key={item.id}
+                  className={`box-outline ${demoMode ? 'demo' : 'actual'} ${active ? 'active' : ''}`}
+                  style={{ '--box-color': item.color }}
+                  onClick={() => onSelect(item.id)}
+                >
+                  <polygon points={pointString(outline)} />
+                  <circle cx={labelX} cy={item.y + item.h / 2} r={active ? 0.95 : 0.7} />
+                  <text x={labelX} y={labelY}>{label}</text>
+                </g>
+              );
+            })}
+          </svg>
+        )}
       </div>
       {!captured && <div className="capture-hint">Outside the ROI is masked out. Capture only evaluates the drag zone.</div>}
     </div>

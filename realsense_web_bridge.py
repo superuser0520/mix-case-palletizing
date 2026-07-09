@@ -98,6 +98,19 @@ def detection_rect(detection: Detection) -> tuple[int, int, int, int]:
     return int(x), int(y), int(w), int(h)
 
 
+def detection_outline_percent(detection: Detection, frame_shape: tuple[int, int]) -> list[dict[str, float]]:
+    frame_h, frame_w = frame_shape[:2]
+    rect = cv2.minAreaRect(detection.contour)
+    points = cv2.boxPoints(rect)
+    return [
+        {
+            "x": clamp((float(px) / frame_w) * 100.0, 0.0, 100.0),
+            "y": clamp((float(py) / frame_h) * 100.0, 0.0, 100.0),
+        }
+        for px, py in points
+    ]
+
+
 def deproject_with_intrinsics(intrinsics: Any, pixel: tuple[float, float], depth_m: float) -> np.ndarray:
     x = (pixel[0] - intrinsics.ppx) / intrinsics.fx * depth_m
     y = (pixel[1] - intrinsics.ppy) / intrinsics.fy * depth_m
@@ -286,6 +299,7 @@ def detection_to_payload(
         "id": index + 1,
         "isBest": index == best_idx,
         **rect_to_percent(detection_rect(detection), frame_shape),
+        "outline": detection_outline_percent(detection, frame_shape),
         **dimensions_from_detection(
             detection,
             intrinsics,
