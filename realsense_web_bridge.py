@@ -54,9 +54,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--imgsz", type=int, default=640, help="Segmentation inference size")
     parser.add_argument("--conf", type=float, default=0.35, help="Segmentation confidence threshold")
     parser.add_argument("--iou", type=float, default=0.7, help="Segmentation NMS IoU threshold")
-    parser.add_argument("--min-area", type=int, default=2000, help="Minimum mask area in pixels")
+    parser.add_argument("--min-area", type=int, default=500, help="Minimum mask area in pixels")
     parser.add_argument("--tie-depth-mm", type=float, default=5.0, help="Height tie threshold in millimeters")
-    parser.add_argument("--dimension-scale", type=float, default=1.13, help="Calibration factor applied to measured length/width")
+    parser.add_argument("--dimension-scale", type=float, default=1.13, help="Base calibration factor applied to measured length/width")
+    parser.add_argument("--dimension-length-scale", type=float, default=1.04, help="Commissioning correction for reported length")
+    parser.add_argument("--dimension-width-scale", type=float, default=1.40, help="Commissioning correction for reported width")
     parser.add_argument("--device", default=None, help="Ultralytics device, for example 0 or cpu")
     parser.add_argument("--half", action="store_true", help="Use FP16 inference when supported")
     return parser.parse_args()
@@ -101,7 +103,13 @@ def deproject_with_intrinsics(intrinsics: Any, pixel: tuple[float, float], depth
     return np.array([x, y, depth_m], dtype=np.float64) * 1000.0
 
 
-def dimensions_from_detection(detection: Detection, intrinsics: Any, dimension_scale: float) -> dict[str, int]:
+def dimensions_from_detection(
+    detection: Detection,
+    intrinsics: Any,
+    dimension_scale: float,
+    dimension_length_scale: float,
+    dimension_width_scale: float,
+) -> dict[str, int]:
     depth_m = float(detection.avg_depth_m)
     rect = cv2.minAreaRect(detection.contour)
     points = cv2.boxPoints(rect)
@@ -112,9 +120,11 @@ def dimensions_from_detection(detection: Detection, intrinsics: Any, dimension_s
     ]
     dim_x = float(np.mean([side_lengths[0], side_lengths[2]])) * float(dimension_scale)
     dim_y = float(np.mean([side_lengths[1], side_lengths[3]])) * float(dimension_scale)
+    measured_width = min(dim_x, dim_y) * float(dimension_width_scale)
+    measured_length = max(dim_x, dim_y) * float(dimension_length_scale)
     return {
-        "widthMm": int(round(min(dim_x, dim_y))),
-        "lengthMm": int(round(max(dim_x, dim_y))),
+        "widthMm": int(round(measured_width)),
+        "lengthMm": int(round(measured_length)),
         "dimXmm": int(round(dim_x)),
         "dimYmm": int(round(dim_y)),
     }
@@ -138,8 +148,8 @@ def reject_bright_support_surface(color_bgr: np.ndarray, detection: Detection) -
 def segment_color_candidates(color_bgr: np.ndarray, roi_mask: np.ndarray, min_area_px: int) -> list[np.ndarray]:
     hsv = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2HSV)
     h, s, v = cv2.split(hsv)
-    dark_object = (v < 118).astype(np.uint8) * 255
-    cardboard_or_colored = ((s > 42) & (v > 55) & (v < 245)).astype(np.uint8) * 255
+    dark_object = ((v < 145) & (s > 14)).astype(np.uint8) * 255
+    cardboard_or_colored = ((s > 24) & (v > 45) & (v < 245)).astype(np.uint8) * 255
     candidate = cv2.bitwise_or(dark_object, cardboard_or_colored)
     candidate = cv2.bitwise_and(candidate, roi_mask)
     candidate = clean_mask(candidate)
@@ -161,8 +171,6 @@ def segment_color_candidates(color_bgr: np.ndarray, roi_mask: np.ndarray, min_ar
         w = int(stats[label, cv2.CC_STAT_WIDTH])
         h_box = int(stats[label, cv2.CC_STAT_HEIGHT])
         if area > roi_area * 0.55:
-            continue
-        if x <= roi_x + 2 or y <= roi_y + 2 or x + w >= roi_x + roi_w - 3 or y + h_box >= roi_y + roi_h - 3:
             continue
         mask = np.zeros(color_bgr.shape[:2], dtype=np.uint8)
         mask[labels == label] = 255
@@ -186,6 +194,24 @@ def has_depth_contrast(mask: np.ndarray, depth_raw: np.ndarray, roi_mask: np.nda
     return bool(inside_mm < outside_mm - 3.0)
 
 
+def refine_mask_by_depth(mask: np.ndarray, depth_raw: np.ndarray, roi_mask: np.ndarray, depth_scale: float) -> Optional[np.ndarray]:
+    kernel = np.ones((21, 21), np.uint8)
+    ring = cv2.dilate(mask, kernel, iterations=1)
+    ring = cv2.bitwise_and(ring, roi_mask)
+    ring[mask > 0] = 0
+    outside = depth_raw[ring > 0]
+    outside = outside[outside > 0]
+    if outside.size < 30:
+        return None
+    background_mm = float(np.median(outside.astype(np.float32) * float(depth_scale) * 1000.0))
+    depth_mm = depth_raw.astype(np.float32) * float(depth_scale) * 1000.0
+    refined = ((mask > 0) & (depth_raw > 0) & (depth_mm < background_mm - 2.5)).astype(np.uint8) * 255
+    refined = clean_mask(refined)
+    if cv2.countNonZero(refined) < 60:
+        return None
+    return refined
+
+
 def detection_to_payload(
     detection: Detection,
     index: int,
@@ -193,6 +219,8 @@ def detection_to_payload(
     frame_shape: tuple[int, int],
     intrinsics: Any,
     dimension_scale: float,
+    dimension_length_scale: float,
+    dimension_width_scale: float,
 ) -> dict[str, Any]:
     camera_xyz = detection.camera_xyz_mm if detection.camera_xyz_mm is not None else np.zeros(3)
     robot_xyz = detection.robot_xyz_mm if detection.robot_xyz_mm is not None else np.zeros(3)
@@ -200,7 +228,13 @@ def detection_to_payload(
         "id": index + 1,
         "isBest": index == best_idx,
         **rect_to_percent(detection_rect(detection), frame_shape),
-        **dimensions_from_detection(detection, intrinsics, dimension_scale),
+        **dimensions_from_detection(
+            detection,
+            intrinsics,
+            dimension_scale,
+            dimension_length_scale,
+            dimension_width_scale,
+        ),
         "centerPx": [int(detection.center_px[0]), int(detection.center_px[1])],
         "z": int(round(detection.avg_depth_m * 1000.0)),
         "camera_xyz": [round(float(v), 1) for v in camera_xyz.tolist()],
@@ -275,11 +309,13 @@ class RealSenseBridge:
                         min_area_px=self.args.min_area,
                     )
                     if not masks:
-                        masks = [
-                            mask
-                            for mask in segment_color_candidates(color_roi, roi_mask, self.args.min_area)
-                            if has_depth_contrast(mask, depth_roi, roi_mask, float(self.depth_scale))
-                        ]
+                        masks = []
+                        for mask in segment_color_candidates(color_roi, roi_mask, self.args.min_area):
+                            if not has_depth_contrast(mask, depth_roi, roi_mask, float(self.depth_scale)):
+                                continue
+                            refined = refine_mask_by_depth(mask, depth_roi, roi_mask, float(self.depth_scale))
+                            if refined is not None:
+                                masks.append(refined)
                 else:
                     masks = segment_boxes(
                         model=self.model,
@@ -314,7 +350,16 @@ class RealSenseBridge:
                 )
 
                 result_detections = [
-                    detection_to_payload(detection, index, best_idx, color.shape[:2], self.intrinsics, self.args.dimension_scale)
+                    detection_to_payload(
+                        detection,
+                        index,
+                        best_idx,
+                        color.shape[:2],
+                        self.intrinsics,
+                        self.args.dimension_scale,
+                        self.args.dimension_length_scale,
+                        self.args.dimension_width_scale,
+                    )
                     for index, detection in enumerate(detections)
                 ]
                 return {

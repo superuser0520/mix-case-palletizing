@@ -56,10 +56,12 @@ returns measured Z, box length/width, and camera/robot XYZ.
 The bridge defaults to `640x480@30` because it works on USB 2.x D400 devices.
 For a D457/GMSL or USB 3 connection, you can request a higher profile, for
 example `--width 1280 --height 720 --fps 30` if the camera reports support.
-Length/width output applies `--dimension-scale` to compensate for masks that
-land slightly inside the true carton edge. The current default is calibrated
-from a measured 180 x 95 mm reference box; adjust it during commissioning if
-your measured reference box differs.
+Length/width output applies `--dimension-scale`, `--dimension-length-scale`, and
+`--dimension-width-scale` to compensate for masks that do not land exactly on
+the true carton edge. The current defaults are calibrated from the latest
+157 x 45 mm reference box. During commissioning, capture a known box, compare
+reported length/width against caliper measurements, and adjust those scale
+arguments.
 
 Segmentation choices:
 
