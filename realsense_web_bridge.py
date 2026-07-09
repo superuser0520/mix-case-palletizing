@@ -57,8 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-area", type=int, default=500, help="Minimum mask area in pixels")
     parser.add_argument("--tie-depth-mm", type=float, default=5.0, help="Height tie threshold in millimeters")
     parser.add_argument("--dimension-scale", type=float, default=1.13, help="Base calibration factor applied to measured length/width")
-    parser.add_argument("--dimension-length-scale", type=float, default=1.04, help="Commissioning correction for reported length")
-    parser.add_argument("--dimension-width-scale", type=float, default=1.40, help="Commissioning correction for reported width")
+    parser.add_argument("--dimension-length-scale", type=float, default=1.04, help="Maximum commissioning correction for short reported length")
+    parser.add_argument("--dimension-width-scale", type=float, default=1.32, help="Maximum commissioning correction for very narrow reported width")
     parser.add_argument("--device", default=None, help="Ultralytics device, for example 0 or cpu")
     parser.add_argument("--half", action="store_true", help="Use FP16 inference when supported")
     return parser.parse_args()
@@ -103,6 +103,22 @@ def deproject_with_intrinsics(intrinsics: Any, pixel: tuple[float, float], depth
     return np.array([x, y, depth_m], dtype=np.float64) * 1000.0
 
 
+def adaptive_dimension_corrections(
+    measured_length_mm: float,
+    measured_width_mm: float,
+    max_length_scale: float,
+    max_width_scale: float,
+) -> tuple[float, float]:
+    """Compensate edge erosion without over-inflating larger depth footprints."""
+    narrow_t = clamp((85.0 - measured_width_mm) / 40.0, 0.0, 1.0)
+    width_scale = 1.04 + narrow_t * (float(max_width_scale) - 1.04)
+
+    short_t = clamp((180.0 - measured_length_mm) / 20.0, 0.0, 1.0)
+    long_t = clamp((measured_length_mm - 170.0) / 20.0, 0.0, 1.0)
+    length_scale = (1.0 - long_t) * (1.0 + short_t * (float(max_length_scale) - 1.0)) + long_t * 0.98
+    return length_scale, width_scale
+
+
 def dimensions_from_detection(
     detection: Detection,
     intrinsics: Any,
@@ -120,8 +136,16 @@ def dimensions_from_detection(
     ]
     dim_x = float(np.mean([side_lengths[0], side_lengths[2]])) * float(dimension_scale)
     dim_y = float(np.mean([side_lengths[1], side_lengths[3]])) * float(dimension_scale)
-    measured_width = min(dim_x, dim_y) * float(dimension_width_scale)
-    measured_length = max(dim_x, dim_y) * float(dimension_length_scale)
+    base_width = min(dim_x, dim_y)
+    base_length = max(dim_x, dim_y)
+    length_scale, width_scale = adaptive_dimension_corrections(
+        base_length,
+        base_width,
+        dimension_length_scale,
+        dimension_width_scale,
+    )
+    measured_width = base_width * width_scale
+    measured_length = base_length * length_scale
     return {
         "widthMm": int(round(measured_width)),
         "lengthMm": int(round(measured_length)),
@@ -143,6 +167,20 @@ def reject_bright_support_surface(color_bgr: np.ndarray, detection: Detection) -
     frame_h, frame_w = color_bgr.shape[:2]
     box_area_ratio = (w * h) / float(frame_w * frame_h)
     return mean_sat < 28.0 and mean_val > 118.0 and box_area_ratio > 0.08
+
+
+def reject_implausible_pick_shape(detection: Detection, intrinsics: Any, args: argparse.Namespace) -> bool:
+    dims = dimensions_from_detection(
+        detection,
+        intrinsics,
+        args.dimension_scale,
+        args.dimension_length_scale,
+        args.dimension_width_scale,
+    )
+    width_mm = float(dims["widthMm"])
+    length_mm = float(dims["lengthMm"])
+    aspect = length_mm / max(width_mm, 1.0)
+    return bool(width_mm < 20.0 or length_mm < 40.0 or (width_mm < 40.0 and aspect > 4.5))
 
 
 def segment_color_candidates(color_bgr: np.ndarray, roi_mask: np.ndarray, min_area_px: int) -> list[np.ndarray]:
@@ -342,6 +380,7 @@ class RealSenseBridge:
                     detection
                     for detection in detections
                     if not reject_bright_support_surface(color_roi, detection)
+                    and not reject_implausible_pick_shape(detection, self.intrinsics, self.args)
                 ]
                 best_idx = choose_highest_detection(
                     detections,
