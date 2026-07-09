@@ -56,6 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--iou", type=float, default=0.7, help="Segmentation NMS IoU threshold")
     parser.add_argument("--min-area", type=int, default=500, help="Minimum mask area in pixels")
     parser.add_argument("--tie-depth-mm", type=float, default=5.0, help="Height tie threshold in millimeters")
+    parser.add_argument("--min-object-height-mm", type=float, default=20.0, help="Minimum height above pallet/background plane")
     parser.add_argument("--dimension-scale", type=float, default=1.13, help="Base calibration factor applied to measured length/width")
     parser.add_argument("--dimension-length-scale", type=float, default=1.04, help="Maximum commissioning correction for short reported length")
     parser.add_argument("--dimension-width-scale", type=float, default=1.32, help="Maximum commissioning correction for very narrow reported width")
@@ -181,6 +182,25 @@ def reject_implausible_pick_shape(detection: Detection, intrinsics: Any, args: a
     length_mm = float(dims["lengthMm"])
     aspect = length_mm / max(width_mm, 1.0)
     return bool(width_mm < 20.0 or length_mm < 40.0 or (width_mm < 40.0 and aspect > 4.5))
+
+
+def estimate_background_depth_mm(depth_raw: np.ndarray, roi_mask: np.ndarray, depth_scale: float) -> Optional[float]:
+    valid = depth_raw[(roi_mask > 0) & (depth_raw > 0)]
+    if valid.size < 200:
+        return None
+    depth_mm = valid.astype(np.float32) * float(depth_scale) * 1000.0
+    return float(np.percentile(depth_mm, 70.0))
+
+
+def reject_not_above_background(
+    detection: Detection,
+    background_depth_mm: Optional[float],
+    min_object_height_mm: float,
+) -> bool:
+    if background_depth_mm is None:
+        return False
+    top_depth_mm = float(detection.avg_depth_m) * 1000.0
+    return bool(top_depth_mm > background_depth_mm - float(min_object_height_mm))
 
 
 def segment_color_candidates(color_bgr: np.ndarray, roi_mask: np.ndarray, min_area_px: int) -> list[np.ndarray]:
@@ -376,11 +396,21 @@ class RealSenseBridge:
                     tie_depth_mm=self.args.tie_depth_mm,
                     frame_center=(color.shape[1] / 2.0, color.shape[0] / 2.0),
                 )
+                background_depth_mm = estimate_background_depth_mm(
+                    depth_roi,
+                    roi_mask,
+                    float(self.depth_scale),
+                )
                 detections = [
                     detection
                     for detection in detections
                     if not reject_bright_support_surface(color_roi, detection)
                     and not reject_implausible_pick_shape(detection, self.intrinsics, self.args)
+                    and not reject_not_above_background(
+                        detection,
+                        background_depth_mm,
+                        self.args.min_object_height_mm,
+                    )
                 ]
                 best_idx = choose_highest_detection(
                     detections,
