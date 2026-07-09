@@ -100,8 +100,12 @@ def detection_rect(detection: Detection) -> tuple[int, int, int, int]:
 
 def detection_outline_percent(detection: Detection, frame_shape: tuple[int, int]) -> list[dict[str, float]]:
     frame_h, frame_w = frame_shape[:2]
-    rect = cv2.minAreaRect(detection.contour)
-    points = cv2.boxPoints(rect)
+    perimeter = cv2.arcLength(detection.contour, True)
+    approx = cv2.approxPolyDP(detection.contour, 0.012 * perimeter, True)
+    points = approx.reshape(-1, 2)
+    if len(points) < 4 or len(points) > 16:
+        rect = cv2.minAreaRect(detection.contour)
+        points = cv2.boxPoints(rect)
     return [
         {
             "x": clamp((float(px) / frame_w) * 100.0, 0.0, 100.0),
@@ -437,7 +441,7 @@ class RealSenseBridge:
                         detection,
                         index,
                         best_idx,
-                        color.shape[:2],
+                        color_roi.shape[:2],
                         self.intrinsics,
                         self.args.dimension_scale,
                         self.args.dimension_length_scale,
