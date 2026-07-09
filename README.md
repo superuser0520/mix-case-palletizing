@@ -79,8 +79,12 @@ and whether another process owns the camera.
 The React web demo is an operator-interface prototype. Before capture, it shows
 the browser RGB camera preview when camera permission is available. When
 **Demo result on** is enabled, pressing **Capture** switches from live RGB to a
-simulated detection result. A browser cannot directly run `pyrealsense2`, align
-D457 depth to RGB, or call the RealSense SDK.
+simulated detection result. With **Actual RGB mode** enabled, pressing
+**Capture** freezes the browser camera frame, applies the dragged ROI, runs a
+lightweight RGB foreground/cardboard detector, and draws selectable box
+candidates. This browser mode is useful for UI validation and camera aiming, but
+its Z value is an RGB estimate. A browser cannot directly run `pyrealsense2`,
+align D457 depth to RGB, or call the RealSense SDK.
 
 The real depalletizing processing runs in `depalletizing_realsense_d457.py` on
 the Windows PC connected to the RealSense camera. That Python process owns the
