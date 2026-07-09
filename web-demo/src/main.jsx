@@ -7,6 +7,7 @@ import {
   Check,
   ChevronRight,
   Crosshair,
+  Download,
   Maximize2,
   MousePointer2,
   RefreshCw,
@@ -32,6 +33,8 @@ const D457_DEPTH_FOV = { h: 87, v: 58, tolerance: 3 };
 const D457_MIN_RANGE_MM = 600;
 const MOUNT_MARGIN = 0.15;
 const DEFAULT_PALLET = { width: '1100', depth: '1100' };
+const DEFAULT_APRIL_SETUP = { cameraHeight: '1200', tagCount: '4', startId: '0' };
+const APRILTAG_BRIDGE_BASE = 'http://127.0.0.1:8765/api';
 const REALSENSE_BRIDGE_URL = 'http://127.0.0.1:8765/api/capture';
 const REALSENSE_PREVIEW_URL = 'http://127.0.0.1:8765/api/preview';
 
@@ -74,6 +77,47 @@ function calculateMountingHeight(pallet) {
   };
 }
 
+function calculateAprilTagSetup(cameraHeightValue, tagCountValue) {
+  const cameraHeight = parseDimension(cameraHeightValue, Number(DEFAULT_APRIL_SETUP.cameraHeight));
+  const tagCount = Math.max(1, Math.min(8, Math.round(parseDimension(tagCountValue, Number(DEFAULT_APRIL_SETUP.tagCount)))));
+  const blackSize = Math.round(Math.max(60, Math.min(160, cameraHeight * 0.12)));
+  const quietBorder = Math.round(Math.max(10, blackSize * 0.18));
+  const printSize = blackSize + quietBorder * 2;
+  return {
+    cameraHeight,
+    tagCount,
+    blackSize,
+    quietBorder,
+    printSize,
+    family: 'tag36h11',
+  };
+}
+
+function aprilTagParams(setup, extra = {}) {
+  return new URLSearchParams({
+    blackMm: String(setup.blackSize),
+    borderMm: String(setup.quietBorder),
+    dpi: '300',
+    ...extra,
+  }).toString();
+}
+
+function aprilTagImageUrl(id, setup) {
+  return `${APRILTAG_BRIDGE_BASE}/apriltag.png?${aprilTagParams(setup, { id: String(id) })}`;
+}
+
+function aprilTagSheetUrl(startId, setup) {
+  return `${APRILTAG_BRIDGE_BASE}/apriltag-sheet.png?${aprilTagParams(setup, { startId: String(startId), count: String(setup.tagCount) })}`;
+}
+
+function downloadUrl(url) {
+  const link = document.createElement('a');
+  link.href = url;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 function App() {
   const [view, setView] = useState('vision');
   const [demoMode, setDemoMode] = useState(true);
@@ -83,6 +127,7 @@ function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [roi, setRoi] = useState({ x: 6, y: 6, w: 88, h: 88 });
   const [pallet, setPallet] = useState(DEFAULT_PALLET);
+  const [aprilSetup, setAprilSetup] = useState(DEFAULT_APRIL_SETUP);
   const [cameraStream, setCameraStream] = useState(null);
   const [actualBoxes, setActualBoxes] = useState([]);
   const [capturedFrame, setCapturedFrame] = useState('');
@@ -91,6 +136,7 @@ function App() {
   const videoElementRef = useRef(null);
 
   const mount = useMemo(() => calculateMountingHeight(pallet), [pallet]);
+  const aprilTagSetup = useMemo(() => calculateAprilTagSetup(aprilSetup.cameraHeight, aprilSetup.tagCount), [aprilSetup]);
   const demoDetectedBoxes = useMemo(() => boxes.filter((item) => isBoxInsideRoi(item, roi)), [roi]);
   const detectedBoxes = demoMode ? demoDetectedBoxes : actualBoxes;
   const highestBox = useMemo(() => chooseHighest(detectedBoxes), [detectedBoxes]);
@@ -260,6 +306,7 @@ function App() {
           <NavButton active={view === 'vision'} onClick={() => setView('vision')} icon={<Camera size={18} />} label="Vision" />
           <NavButton active={view === 'queue'} onClick={() => setView('queue')} icon={<Box size={18} />} label="Pick Queue" />
           <NavButton active={view === 'calibration'} onClick={() => setView('calibration')} icon={<Activity size={18} />} label="Calibration" />
+          <NavButton active={view === 'apriltag'} onClick={() => setView('apriltag')} icon={<Crosshair size={18} />} label="AprilTag Setup" />
         </nav>
 
         <section className="soft-card sequence-card">
@@ -275,8 +322,8 @@ function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <h2>{view === 'vision' ? 'Depalletizing console' : view === 'queue' ? 'Pick queue' : 'Calibration setup'}</h2>
-            <p>{view === 'vision' ? 'Capture once, evaluate the stack, then confirm the robot pick.' : view === 'queue' ? 'Confirmed picks and pending handoffs for the robot cell.' : 'Eye-to-hand transform, mount height, and ROI setup status.'}</p>
+            <h2>{view === 'vision' ? 'Depalletizing console' : view === 'queue' ? 'Pick queue' : view === 'apriltag' ? 'AprilTag setup' : 'Calibration setup'}</h2>
+            <p>{view === 'vision' ? 'Capture once, evaluate the stack, then confirm the robot pick.' : view === 'queue' ? 'Confirmed picks and pending handoffs for the robot cell.' : view === 'apriltag' ? 'Generate printable datum tags from your real camera height.' : 'Eye-to-hand transform, mount height, and ROI setup status.'}</p>
           </div>
           <div className="top-actions">
             <StatusPill label={cameraStatus} />
@@ -340,6 +387,7 @@ function App() {
 
         {view === 'queue' && <PickQueue candidate={candidate} confirmed={confirmed} />}
         {view === 'calibration' && <Calibration roi={roi} pallet={pallet} setPallet={setPallet} mount={mount} />}
+        {view === 'apriltag' && <AprilTagSetup values={aprilSetup} setValues={setAprilSetup} setup={aprilTagSetup} />}
       </section>
     </main>
   );
@@ -617,6 +665,112 @@ function Calibration({ roi, pallet, setPallet, mount }) {
           [ 0.000  0.000  0.000  1.0 ]
         </code>
         <p>Example: camera point [137, 27, 756, 1] multiplied by this 4x4 matrix returns robot base XYZ. Replace identity with your calibrated eye-to-hand transform before robot deployment.</p>
+      </article>
+    </section>
+  );
+}
+
+function AprilTagSetup({ values, setValues, setup }) {
+  const startId = Math.max(0, Math.round(parseDimension(values.startId, Number(DEFAULT_APRIL_SETUP.startId))));
+  const ids = Array.from({ length: setup.tagCount }, (_, index) => startId + index);
+  const previewUrl = aprilTagImageUrl(ids[0], setup);
+  const sheetUrl = aprilTagSheetUrl(startId, setup);
+
+  function updateValue(key, value) {
+    setValues((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }
+
+  function downloadSheet() {
+    downloadUrl(sheetUrl);
+  }
+
+  function downloadFirstTag() {
+    downloadUrl(previewUrl);
+  }
+
+  return (
+    <section className="apriltag-grid">
+      <article className="cal-card april-input-card">
+        <p className="label">Datum target</p>
+        <h3>Camera-height based tag sizing</h3>
+        <div className="dimension-grid">
+          <label>
+            Camera height from pallet mm
+            <input
+              type="text"
+              inputMode="decimal"
+              value={values.cameraHeight}
+              onChange={(event) => updateValue('cameraHeight', event.target.value)}
+            />
+          </label>
+          <label>
+            Number of tags
+            <input
+              type="text"
+              inputMode="numeric"
+              value={values.tagCount}
+              onChange={(event) => updateValue('tagCount', event.target.value)}
+            />
+          </label>
+          <label>
+            First tag ID
+            <input
+              type="text"
+              inputMode="numeric"
+              value={values.startId}
+              onChange={(event) => updateValue('startId', event.target.value)}
+            />
+          </label>
+        </div>
+
+        <div className="tag-recommendation">
+          <div>
+            <span>Black square</span>
+            <strong>{setup.blackSize} mm</strong>
+          </div>
+          <div>
+            <span>Print size</span>
+            <strong>{setup.printSize} mm</strong>
+          </div>
+          <div>
+            <span>Quiet border</span>
+            <strong>{setup.quietBorder} mm</strong>
+          </div>
+          <div>
+            <span>Family</span>
+            <strong>{setup.family}</strong>
+          </div>
+        </div>
+
+        <div className="actions tag-actions">
+          <button className="primary" onClick={downloadSheet}><Download size={18} />Download A4 PNG</button>
+          <button className="secondary" onClick={downloadFirstTag}><Download size={18} />Single tag PNG</button>
+        </div>
+        <p>Print at 100% scale. Measure the black square after printing and use that exact value in commissioning.</p>
+      </article>
+
+      <article className="cal-card tag-preview-card">
+        <p className="label">Print preview</p>
+        <h3>Tag ID {ids[0]}</h3>
+        <div className="tag-preview">
+          <img src={previewUrl} alt={`AprilTag tag36h11 ID ${ids[0]}`} />
+        </div>
+        <p>Generated by the local Pallet Sight bridge using OpenCV `DICT_APRILTAG_36h11`. Keep the bridge running to preview or download real tags.</p>
+      </article>
+
+      <article className="cal-card wide datum-guide">
+        <p className="label">Robot datum method</p>
+        <h3>Recommended installation steps</h3>
+        <div className="guide-steps">
+          <div><strong>1</strong><span>Mount 4 tags on a rigid matte datum plate outside the box pick area, on the same pallet or floor plane.</span></div>
+          <div><strong>2</strong><span>Put tag centers at measured coordinates, for example `(0,0,0)`, `(1100,0,0)`, `(1100,1100,0)`, `(0,1100,0)`.</span></div>
+          <div><strong>3</strong><span>Teach those same datum points with the robot TCP to establish `T_robot_datum`.</span></div>
+          <div><strong>4</strong><span>Detect tags with RealSense RGB/depth to establish `T_camera_datum`, then compute `T_robot_camera`.</span></div>
+          <div><strong>5</strong><span>Fit the datum plane as Z=0. Box height is the signed distance from detected box top points to this plane.</span></div>
+        </div>
       </article>
     </section>
   );

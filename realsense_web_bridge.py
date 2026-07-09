@@ -18,6 +18,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
 
 import cv2
 import numpy as np
@@ -328,6 +329,79 @@ def encode_frame_jpeg(color_bgr: np.ndarray) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
+def query_float(query: dict[str, list[str]], key: str, default: float, low: float, high: float) -> float:
+    try:
+        value = float(query.get(key, [default])[0])
+    except (TypeError, ValueError):
+        value = default
+    return clamp(value, low, high)
+
+
+def query_int(query: dict[str, list[str]], key: str, default: int, low: int, high: int) -> int:
+    try:
+        value = int(round(float(query.get(key, [default])[0])))
+    except (TypeError, ValueError):
+        value = default
+    return int(clamp(value, low, high))
+
+
+def mm_to_px(mm: float, dpi: float) -> int:
+    return max(1, int(round((float(mm) / 25.4) * float(dpi))))
+
+
+def generate_apriltag_image(tag_id: int, black_mm: float, border_mm: float, dpi: float) -> np.ndarray:
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+    marker_px = mm_to_px(black_mm, dpi)
+    border_px = mm_to_px(border_mm, dpi)
+    marker = cv2.aruco.generateImageMarker(dictionary, int(tag_id), marker_px)
+    canvas = np.full((marker_px + border_px * 2, marker_px + border_px * 2), 255, dtype=np.uint8)
+    canvas[border_px:border_px + marker_px, border_px:border_px + marker_px] = marker
+    return canvas
+
+
+def encode_png(image: np.ndarray) -> bytes:
+    ok, encoded = cv2.imencode(".png", image)
+    if not ok:
+        raise RuntimeError("Failed to encode PNG.")
+    return encoded.tobytes()
+
+
+def generate_apriltag_sheet(query: dict[str, list[str]]) -> bytes:
+    start_id = query_int(query, "startId", 0, 0, 586)
+    count = query_int(query, "count", 4, 1, 8)
+    black_mm = query_float(query, "blackMm", 100.0, 40.0, 180.0)
+    border_mm = query_float(query, "borderMm", 18.0, 6.0, 40.0)
+    dpi = query_float(query, "dpi", 300.0, 150.0, 600.0)
+    page_w = mm_to_px(210.0, dpi)
+    page_h = mm_to_px(297.0, dpi)
+    margin = mm_to_px(14.0, dpi)
+    gap = mm_to_px(12.0, dpi)
+    label_h = mm_to_px(12.0, dpi)
+    sheet = np.full((page_h, page_w), 255, dtype=np.uint8)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(sheet, "Pallet Sight AprilTag datum sheet - tag36h11 - print at 100% scale",
+                (margin, mm_to_px(9.0, dpi)), font, 0.75 * dpi / 300.0, 0, max(1, int(dpi / 220)), cv2.LINE_AA)
+    tag = generate_apriltag_image(start_id, black_mm, border_mm, dpi)
+    tag_h, tag_w = tag.shape[:2]
+    columns = max(1, (page_w - margin * 2 + gap) // (tag_w + gap))
+    y0 = mm_to_px(18.0, dpi)
+    for idx in range(count):
+        tag_id = start_id + idx
+        tag = generate_apriltag_image(tag_id, black_mm, border_mm, dpi)
+        col = idx % columns
+        row = idx // columns
+        x = margin + col * (tag_w + gap)
+        y = y0 + row * (tag_h + label_h + gap)
+        if y + tag_h + label_h >= page_h - margin:
+            break
+        sheet[y:y + tag_h, x:x + tag_w] = tag
+        cv2.putText(sheet, f"ID {tag_id}  black square {black_mm:.0f} mm",
+                    (x, y + tag_h + mm_to_px(7.0, dpi)), font, 0.62 * dpi / 300.0, 0, max(1, int(dpi / 260)), cv2.LINE_AA)
+    footer = f"Measure printed black square before calibration. Quiet border {border_mm:.0f} mm. DPI {dpi:.0f}."
+    cv2.putText(sheet, footer, (margin, page_h - margin), font, 0.58 * dpi / 300.0, 0, max(1, int(dpi / 280)), cv2.LINE_AA)
+    return encode_png(sheet)
+
+
 class RealSenseBridge:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -501,14 +575,46 @@ def make_handler(bridge: RealSenseBridge):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_binary(self, status: int, body: bytes, content_type: str, filename: Optional[str] = None) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            if filename:
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_OPTIONS(self) -> None:
             self._send_json(200, {"ok": True})
 
         def do_GET(self) -> None:
-            if self.path == "/api/health":
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query)
+            if parsed.path == "/api/health":
                 self._send_json(200, {"ok": True, "message": "RealSense bridge is running"})
                 return
-            if self.path == "/api/preview":
+            if parsed.path == "/api/apriltag.png":
+                try:
+                    tag_id = query_int(query, "id", 0, 0, 586)
+                    black_mm = query_float(query, "blackMm", 100.0, 40.0, 180.0)
+                    border_mm = query_float(query, "borderMm", 18.0, 6.0, 40.0)
+                    dpi = query_float(query, "dpi", 300.0, 150.0, 600.0)
+                    image = generate_apriltag_image(tag_id, black_mm, border_mm, dpi)
+                    self._send_binary(200, encode_png(image), "image/png", f"apriltag-36h11-id-{tag_id}-{black_mm:.0f}mm.png")
+                except Exception as exc:
+                    self._send_json(503, {"ok": False, "message": str(exc)})
+                return
+            if parsed.path == "/api/apriltag-sheet.png":
+                try:
+                    black_mm = query_float(query, "blackMm", 100.0, 40.0, 180.0)
+                    self._send_binary(200, generate_apriltag_sheet(query), "image/png", f"pallet-sight-apriltag-sheet-{black_mm:.0f}mm.png")
+                except Exception as exc:
+                    self._send_json(503, {"ok": False, "message": str(exc)})
+                return
+            if parsed.path == "/api/preview":
                 try:
                     self._send_json(200, bridge.preview())
                 except Exception as exc:

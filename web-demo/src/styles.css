@@ -620,6 +620,12 @@ button:not(:disabled) {
   gap: 18px;
 }
 
+.apriltag-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  gap: 18px;
+}
+
 .cal-card strong {
   display: block;
   font-size: 44px;
@@ -680,6 +686,101 @@ button:not(:disabled) {
   line-height: 1.65;
 }
 
+.tag-recommendation {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.tag-recommendation div {
+  border-radius: 20px;
+  background: var(--soft);
+  padding: 14px;
+}
+
+.tag-recommendation span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.tag-recommendation strong {
+  font-size: 24px;
+  margin: 10px 0 0;
+}
+
+.tag-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.tag-preview-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.tag-preview {
+  min-height: 320px;
+  border-radius: 24px;
+  background:
+    linear-gradient(90deg, rgba(8, 7, 7, 0.06) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(8, 7, 7, 0.06) 1px, transparent 1px),
+    #f6f7f9;
+  background-size: 18px 18px;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.tag-preview img {
+  width: min(100%, 320px);
+  height: auto;
+  border: 1px solid var(--line);
+  box-shadow: 0 18px 40px rgba(66, 68, 79, 0.12);
+}
+
+.datum-guide {
+  grid-column: 1 / -1;
+}
+
+.guide-steps {
+  display: grid;
+  gap: 12px;
+}
+
+.guide-steps div {
+  min-height: 62px;
+  border-radius: 20px;
+  background: var(--soft);
+  display: grid;
+  grid-template-columns: 42px 1fr;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+}
+
+.guide-steps strong {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--lime);
+  display: grid;
+  place-items: center;
+  margin: 0;
+  font-size: 18px;
+}
+
+.guide-steps span {
+  color: var(--graphite);
+  font-weight: 700;
+  line-height: 1.45;
+}
+
 @media (max-width: 1120px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -734,8 +835,13 @@ button:not(:disabled) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .calibration-grid {
+  .calibration-grid,
+  .apriltag-grid {
     grid-template-columns: 1fr;
+  }
+
+  .tag-recommendation {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .queue-row {
