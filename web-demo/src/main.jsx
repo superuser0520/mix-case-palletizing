@@ -90,19 +90,12 @@ function App() {
   const candidate = selectedBox ?? (captured ? highestBox : null);
 
   useEffect(() => {
-    if (demoMode) {
-      cameraStream?.getTracks().forEach((track) => track.stop());
-      setCameraStream(null);
-      setCameraStatus('Demo mode');
-      return;
-    }
-
     let active = true;
     const cameraTimeout = window.setTimeout(() => {
       if (active && !cameraStream) setCameraStatus('Waiting for camera permission');
     }, 3500);
 
-    setCameraStatus('Requesting camera');
+    setCameraStatus('Requesting RGB preview');
     if (!navigator.mediaDevices?.getUserMedia) {
       window.clearTimeout(cameraTimeout);
       setCameraStatus('Browser camera API unavailable');
@@ -117,7 +110,7 @@ function App() {
           return;
         }
         setCameraStream(stream);
-        setCameraStatus('Browser camera live');
+        setCameraStatus('RGB preview live');
       })
       .catch(() => {
         window.clearTimeout(cameraTimeout);
@@ -128,7 +121,7 @@ function App() {
       active = false;
       window.clearTimeout(cameraTimeout);
     };
-  }, [demoMode]);
+  }, []);
 
   function resetPick() {
     setCaptured(false);
@@ -183,10 +176,10 @@ function App() {
             <p>{view === 'vision' ? 'Capture once, evaluate the stack, then confirm the robot pick.' : view === 'queue' ? 'Confirmed picks and pending handoffs for the robot cell.' : 'Eye-to-hand transform, mount height, and ROI setup status.'}</p>
           </div>
           <div className="top-actions">
-            <StatusPill label={demoMode ? 'Demo mode' : cameraStatus} />
+            <StatusPill label={cameraStatus} />
             <button className="toggle" onClick={() => { setDemoMode(!demoMode); resetPick(); }}>
               <ToggleLeft size={20} />
-              {demoMode ? 'Demo on' : 'Demo off'}
+              {demoMode ? 'Demo result on' : 'Demo result off'}
             </button>
           </div>
         </header>
@@ -359,8 +352,9 @@ function PalletPreview({ captured, selectedId, detectedBoxes, onSelect, demoMode
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
       >
-        {!demoMode && cameraStream && <video ref={videoRef} className="camera-feed" autoPlay muted playsInline />}
-        {!demoMode && !cameraStream && <div className="camera-empty">{cameraStatus}. Use Demo On for synthetic pallet preview.</div>}
+        {!captured && cameraStream && <video ref={videoRef} className="camera-feed" autoPlay muted playsInline />}
+        {!captured && !cameraStream && <div className="camera-empty">{cameraStatus}. Allow camera access to aim before capture.</div>}
+        {captured && demoMode && <div className="simulation-surface" />}
 
         <div className="roi-mask top" style={{ height: `${shownRoi.y}%` }} />
         <div className="roi-mask left" style={{ top: `${shownRoi.y}%`, width: `${shownRoi.x}%`, height: `${shownRoi.h}%` }} />
@@ -377,7 +371,7 @@ function PalletPreview({ captured, selectedId, detectedBoxes, onSelect, demoMode
           }}
         />
 
-        {demoMode && detectedBoxes.map((item) => {
+        {captured && demoMode && detectedBoxes.map((item) => {
           const active = captured && item.id === selectedId;
           return (
             <button

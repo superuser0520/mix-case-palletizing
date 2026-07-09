@@ -1022,7 +1022,7 @@ def run_operator_console(args: argparse.Namespace, recommendation: CameraMountRe
             roi = state["roi"]
             model_type = "demo"
         else:
-            color, detections, best_idx, roi, model_type = preview_frame_or_status(state)
+            color, detections, best_idx, roi, model_type = live_camera_preview_or_status(args, state)
 
         drag_roi = None
         if state["dragging"] and state["drag_start"] and state["drag_current"]:
@@ -1177,25 +1177,60 @@ def preview_frame_or_status(
     return frame, [], None, state.get("roi"), str(state["model_type"])
 
 
-def ensure_real_resources(args: argparse.Namespace, state: dict) -> None:
-    if state["pipeline"] is not None and state["model"] is not None:
+def live_camera_preview_or_status(
+    args: argparse.Namespace,
+    state: dict,
+) -> tuple[np.ndarray, list[Detection], Optional[int], Optional[tuple[int, int, int, int]], str]:
+    """Show aligned RGB preview before capture without running segmentation."""
+
+    ensure_real_resources(args, state, need_model=False)
+    if state["pipeline"] is None or state["align"] is None:
+        return preview_frame_or_status(state)
+
+    try:
+        frames = state["pipeline"].wait_for_frames(timeout_ms=1000)
+        aligned = state["align"].process(frames)
+        color_frame = aligned.get_color_frame()
+        depth_frame = aligned.get_depth_frame()
+        if not color_frame:
+            raise RuntimeError("RealSense returned no RGB frame for live preview.")
+
+        color = np.asanyarray(color_frame.get_data())
+        if depth_frame:
+            depth = np.asanyarray(depth_frame.get_data())
+        else:
+            depth = np.zeros(color.shape[:2], dtype=np.uint16)
+        color_roi, _depth_roi, _roi_mask = apply_roi(color, depth, state["roi"])
+        state["connection_status"] = "rgb live"
+        state["last_error"] = ""
+        return color_roi, [], None, state["roi"], "rgb-live"
+    except Exception as exc:
+        state["connection_status"] = "fault"
+        state["last_error"] = str(exc)
+        stop_real_resources(state)
+        return preview_frame_or_status(state)
+
+
+def ensure_real_resources(args: argparse.Namespace, state: dict, need_model: bool = True) -> None:
+    model_ready = state["model"] is not None or state["model_type"] == "depth-edge"
+    if state["pipeline"] is not None and (not need_model or model_ready):
         state["connection_status"] = "connected"
         return
 
     try:
         missing = []
-        if args.segmentation_backend != "depth" and (FastSAM is None or YOLO is None):
+        if need_model and args.segmentation_backend != "depth" and (FastSAM is None or YOLO is None):
             missing.append("ultralytics (`pip install ultralytics`)")
         if rs is None:
             missing.append("pyrealsense2 (`pip install pyrealsense2`)")
         if missing:
             raise RuntimeError("Missing dependencies: " + "; ".join(missing))
 
-        if state["model"] is None and state["model_type"] != "depth-edge":
+        if need_model and state["model"] is None and state["model_type"] != "depth-edge":
             model, model_type = load_segmentation_model(args.model, args.segmentation_backend)
             state["model"] = model
             state["model_type"] = model_type
-        if args.segmentation_backend == "depth":
+        if need_model and args.segmentation_backend == "depth":
             state["model"] = None
             state["model_type"] = "depth-edge"
 
@@ -1210,8 +1245,6 @@ def ensure_real_resources(args: argparse.Namespace, state: dict) -> None:
             state["intrinsics"] = color_profile.get_intrinsics()
             if not args.no_auto_roi_load:
                 state["roi"] = load_roi(args.roi_file, color_image.shape[:2])
-            if state["roi"] is None:
-                state["roi"] = select_roi(color_image)
             state["connection_status"] = "connected"
     except Exception as exc:
         state["connection_status"] = "disconnected"

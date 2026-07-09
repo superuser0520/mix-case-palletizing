@@ -319,6 +319,16 @@ button {
   filter: saturate(0.95) contrast(1.04);
 }
 
+.simulation-surface {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.16) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(255, 255, 255, 0.16) 1px, transparent 1px),
+    #dfe3e8;
+  background-size: 48px 48px;
+}
+
 .camera-empty {
   display: grid;
   place-items: center;

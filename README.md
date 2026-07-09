@@ -6,7 +6,7 @@ D457 depalletizing station.
 ## Features
 
 - D457 mounting-height recommendation from configurable pallet width/depth.
-- Demo/camera toggle with guided operator workflow.
+- Live RGB preview before capture, with simulated or real processing after capture.
 - Drag ROI selection directly in the live/demo view.
 - One-shot capture cycle: capture once, freeze result, review candidate, confirm.
 - FastSAM/YOLO zero-shot segmentation path for mixed cardboard boxes.
@@ -66,20 +66,21 @@ python depalletizing_realsense_d457.py --segmentation-backend depth
 
 ## Real Mode Notes
 
-Camera mode idles until **CAPTURE** is pressed. On capture, the app starts the
-RealSense pipeline, aligns depth to color, masks outside the ROI, runs the
-selected segmentation backend, computes per-box depth, rejects masks without
-valid depth, and proposes the highest box.
+Camera mode shows live aligned RGB before **CAPTURE** so the operator can verify
+camera angle and drag the ROI on the real image. On capture, the app masks
+outside the ROI, runs the selected segmentation backend, computes per-box depth,
+rejects masks without valid depth, and proposes the highest box.
 
 If camera mode reports blocked, check D457 power, cable/GMSL adapter, firmware,
 and whether another process owns the camera.
 
 ## Where Processing Runs
 
-The React web demo is an operator-interface prototype. Demo mode runs synthetic
-box data in the browser. Demo Off can show a browser webcam preview, but a
-browser cannot directly run `pyrealsense2`, align D457 depth to RGB, or call the
-RealSense SDK.
+The React web demo is an operator-interface prototype. Before capture, it shows
+the browser RGB camera preview when camera permission is available. When
+**Demo result on** is enabled, pressing **Capture** switches from live RGB to a
+simulated detection result. A browser cannot directly run `pyrealsense2`, align
+D457 depth to RGB, or call the RealSense SDK.
 
 The real depalletizing processing runs in `depalletizing_realsense_d457.py` on
 the Windows PC connected to the RealSense camera. That Python process owns the
