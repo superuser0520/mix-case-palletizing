@@ -41,6 +41,26 @@ python depalletizing_realsense_d457.py --model FastSAM-s.pt --device 0 --half --
 
 Use `--device cpu` if no CUDA GPU is available.
 
+Web UI with real D457 depth capture:
+
+```powershell
+python realsense_web_bridge.py --segmentation-backend depth
+```
+
+Then open the web UI, turn **Demo result** off so the status shows
+**RealSense depth mode**, drag the ROI, and press **Capture**. The browser sends
+preview/capture requests to the local bridge at `http://127.0.0.1:8765`; the
+bridge streams the RealSense RGB preview, captures aligned D457 color/depth, and
+returns measured Z, box length/width, and camera/robot XYZ.
+
+The bridge defaults to `640x480@30` because it works on USB 2.x D400 devices.
+For a D457/GMSL or USB 3 connection, you can request a higher profile, for
+example `--width 1280 --height 720 --fps 30` if the camera reports support.
+Length/width output applies `--dimension-scale` to compensate for masks that
+land slightly inside the true carton edge. The current default is calibrated
+from a measured 180 x 95 mm reference box; adjust it during commissioning if
+your measured reference box differs.
+
 Segmentation choices:
 
 ```powershell
@@ -69,22 +89,25 @@ python depalletizing_realsense_d457.py --segmentation-backend depth
 Camera mode shows live aligned RGB before **CAPTURE** so the operator can verify
 camera angle and drag the ROI on the real image. On capture, the app masks
 outside the ROI, runs the selected segmentation backend, computes per-box depth,
-rejects masks without valid depth, and proposes the highest box.
+computes box length/width from RealSense intrinsics, rejects masks without valid
+depth, and proposes the highest box.
 
 If camera mode reports blocked, check D457 power, cable/GMSL adapter, firmware,
 and whether another process owns the camera.
 
 ## Where Processing Runs
 
-The React web demo is an operator-interface prototype. Before capture, it shows
-the browser RGB camera preview when camera permission is available. When
-**Demo result on** is enabled, pressing **Capture** switches from live RGB to a
-simulated detection result. With **Actual RGB mode** enabled, pressing
-**Capture** freezes the browser camera frame, applies the dragged ROI, runs a
-lightweight RGB foreground/cardboard detector, and draws selectable box
-candidates. This browser mode is useful for UI validation and camera aiming, but
-its Z value is an RGB estimate. A browser cannot directly run `pyrealsense2`,
-align D457 depth to RGB, or call the RealSense SDK.
+The React web demo is an operator-interface prototype. In demo mode, before
+capture it can show the browser RGB camera preview when camera permission is
+available. When **Demo result on** is enabled, pressing **Capture** switches from
+live RGB to a simulated detection result. When **RealSense depth mode** is
+enabled, preview and capture both come from `realsense_web_bridge.py`, which owns
+the D457 stream, performs `rs.align(rs.stream.color)`, masks outside the ROI,
+segments candidates, and returns measured Z and box length/width in millimeters.
+In depth mode, shadows are rejected because candidates must be real depth
+foreground surfaces with valid depth, not only RGB contrast. A browser cannot directly run
+`pyrealsense2`, align D457 depth to RGB, or call the RealSense SDK without this
+local bridge.
 
 The real depalletizing processing runs in `depalletizing_realsense_d457.py` on
 the Windows PC connected to the RealSense camera. That Python process owns the
@@ -92,8 +115,7 @@ D457 stream, performs `rs.align(rs.stream.color)`, applies the ROI mask, runs
 FastSAM/YOLO zero-shot segmentation or depth-edge segmentation, computes depth
 and 3D camera coordinates, applies the hand-eye transform, and prints/returns
 the robot target. For deployment, run the Python process as the vision
-service/operator console, or connect the web UI to it through a local
-API/WebSocket bridge.
+service/operator console, or run `realsense_web_bridge.py` for the web UI.
 
 ## Hand-Eye Matrix Example
 

@@ -458,21 +458,47 @@ def segment_boxes_from_depth(
     depth_mm = depth_raw.astype(np.float32) * float(depth_scale) * 1000.0
     valid_depth = depth_mm[valid]
     low, high = np.percentile(valid_depth, [2, 98])
+    background_depth = float(np.percentile(valid_depth, 92))
+    foreground_margin = max(4.0, edge_threshold_mm * 0.15)
     clipped = np.clip(depth_mm, low, high)
     clipped[~valid] = high
     smooth = cv2.medianBlur(clipped.astype(np.float32), 5)
     grad_x = cv2.Sobel(smooth, cv2.CV_32F, 1, 0, ksize=3)
     grad_y = cv2.Sobel(smooth, cv2.CV_32F, 0, 1, ksize=3)
     gradient = cv2.magnitude(grad_x, grad_y)
-    interior = ((gradient < edge_threshold_mm) & valid).astype(np.uint8) * 255
+    height_foreground = valid & (depth_mm < (background_depth - foreground_margin))
+    if int(np.count_nonzero(height_foreground)) < min_area_px:
+        height_foreground = valid
+    interior = ((gradient < edge_threshold_mm) & height_foreground).astype(np.uint8) * 255
     interior = cv2.bitwise_and(interior, roi_mask)
     interior = clean_mask(interior)
 
     num_labels, labels, stats, _centroids = cv2.connectedComponentsWithStats(interior, 8)
     masks: list[np.ndarray] = []
+    frame_h, frame_w = depth_raw.shape[:2]
+    roi_points = cv2.findNonZero(roi_mask)
+    if roi_points is None:
+        return []
+    roi_x, roi_y, roi_w, roi_h = cv2.boundingRect(roi_points)
+    roi_area = int(np.count_nonzero(roi_mask))
     for label in range(1, num_labels):
         area = int(stats[label, cv2.CC_STAT_AREA])
         if area < min_area_px:
+            continue
+        x = int(stats[label, cv2.CC_STAT_LEFT])
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        w = int(stats[label, cv2.CC_STAT_WIDTH])
+        h = int(stats[label, cv2.CC_STAT_HEIGHT])
+        touches_frame_border = x <= 1 or y <= 1 or x + w >= frame_w - 1 or y + h >= frame_h - 1
+        touches_roi_border = (
+            x <= roi_x + 3
+            or y <= roi_y + 3
+            or x + w >= roi_x + roi_w - 4
+            or y + h >= roi_y + roi_h - 4
+        )
+        too_large = area > int(roi_area * 0.45) or (w > roi_w * 0.85 and h > roi_h * 0.85)
+        boundary_surface = touches_roi_border and area > max(min_area_px * 2, int(roi_area * 0.08))
+        if touches_frame_border or too_large or boundary_surface:
             continue
         mask = np.zeros(depth_raw.shape[:2], dtype=np.uint8)
         mask[labels == label] = 255

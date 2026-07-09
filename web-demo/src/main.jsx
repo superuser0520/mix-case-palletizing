@@ -17,21 +17,23 @@ import {
 import './styles.css';
 
 const boxes = [
-  { id: 1, x: 8, y: 9, w: 28, h: 21, z: 846, color: '#B99EF8' },
-  { id: 2, x: 38, y: 9, w: 24, h: 21, z: 781, color: '#F2C96B' },
-  { id: 3, x: 64, y: 9, w: 28, h: 21, z: 910, color: '#83A633' },
-  { id: 4, x: 8, y: 34, w: 23, h: 25, z: 832, color: '#69BFE8' },
-  { id: 5, x: 33, y: 34, w: 29, h: 25, z: 756, color: '#DFA1D8' },
-  { id: 6, x: 64, y: 34, w: 28, h: 25, z: 836, color: '#B99EF8' },
-  { id: 7, x: 8, y: 63, w: 31, h: 19, z: 901, color: '#DEF4A5' },
-  { id: 8, x: 41, y: 63, w: 23, h: 19, z: 819, color: '#6AA9F2' },
-  { id: 9, x: 66, y: 63, w: 26, h: 19, z: 874, color: '#F6A06E' },
+  { id: 1, x: 8, y: 9, w: 28, h: 21, z: 846, lengthMm: 310, widthMm: 230, color: '#B99EF8' },
+  { id: 2, x: 38, y: 9, w: 24, h: 21, z: 781, lengthMm: 265, widthMm: 230, color: '#F2C96B' },
+  { id: 3, x: 64, y: 9, w: 28, h: 21, z: 910, lengthMm: 310, widthMm: 230, color: '#83A633' },
+  { id: 4, x: 8, y: 34, w: 23, h: 25, z: 832, lengthMm: 275, widthMm: 250, color: '#69BFE8' },
+  { id: 5, x: 33, y: 34, w: 29, h: 25, z: 756, lengthMm: 320, widthMm: 250, color: '#DFA1D8' },
+  { id: 6, x: 64, y: 34, w: 28, h: 25, z: 836, lengthMm: 310, widthMm: 250, color: '#B99EF8' },
+  { id: 7, x: 8, y: 63, w: 31, h: 19, z: 901, lengthMm: 340, widthMm: 210, color: '#DEF4A5' },
+  { id: 8, x: 41, y: 63, w: 23, h: 19, z: 819, lengthMm: 255, widthMm: 210, color: '#6AA9F2' },
+  { id: 9, x: 66, y: 63, w: 26, h: 19, z: 874, lengthMm: 285, widthMm: 210, color: '#F6A06E' },
 ];
 
 const D457_DEPTH_FOV = { h: 87, v: 58, tolerance: 3 };
 const D457_MIN_RANGE_MM = 600;
 const MOUNT_MARGIN = 0.15;
 const DEFAULT_PALLET = { width: '1100', depth: '1100' };
+const REALSENSE_BRIDGE_URL = 'http://127.0.0.1:8765/api/capture';
+const REALSENSE_PREVIEW_URL = 'http://127.0.0.1:8765/api/preview';
 
 function isBoxInsideRoi(item, roi) {
   const centerX = item.x + item.w / 2;
@@ -72,244 +74,6 @@ function calculateMountingHeight(pallet) {
   };
 }
 
-function estimateBoxDepth(areaRatio, centerX, centerY) {
-  const centerPenalty = Math.hypot(centerX - 50, centerY - 50) * 1.8;
-  const areaBonus = Math.min(areaRatio * 850, 280);
-  return Math.round(940 - areaBonus + centerPenalty);
-}
-
-function buildMaskFromImage(imageData, width, height, roi) {
-  const data = imageData.data;
-  const mask = new Uint8Array(width * height);
-  const startX = Math.max(0, Math.floor((roi.x / 100) * width));
-  const startY = Math.max(0, Math.floor((roi.y / 100) * height));
-  const endX = Math.min(width, Math.ceil(((roi.x + roi.w) / 100) * width));
-  const endY = Math.min(height, Math.ceil(((roi.y + roi.h) / 100) * height));
-  const sampleR = [];
-  const sampleG = [];
-  const sampleB = [];
-  const borderStep = 4;
-  const borderBand = Math.max(3, Math.round(Math.min(endX - startX, endY - startY) * 0.035));
-
-  for (let y = startY; y < endY; y += borderStep) {
-    for (let x = startX; x < endX; x += borderStep) {
-      const nearBorder = x < startX + borderBand || x > endX - borderBand || y < startY + borderBand || y > endY - borderBand;
-      if (!nearBorder) continue;
-      const idx = (y * width + x) * 4;
-      sampleR.push(data[idx]);
-      sampleG.push(data[idx + 1]);
-      sampleB.push(data[idx + 2]);
-    }
-  }
-
-  const median = (items) => {
-    if (!items.length) return 128;
-    const sorted = [...items].sort((a, b) => a - b);
-    return sorted[Math.floor(sorted.length / 2)];
-  };
-  const bgR = median(sampleR);
-  const bgG = median(sampleG);
-  const bgB = median(sampleB);
-  let objectPixels = 0;
-
-  for (let y = startY; y < endY; y += 1) {
-    for (let x = startX; x < endX; x += 1) {
-      const idx = (y * width + x) * 4;
-      const r = data[idx];
-      const g = data[idx + 1];
-      const b = data[idx + 2];
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      const brightness = (r + g + b) / 3;
-      const backgroundDistance = Math.hypot(r - bgR, g - bgG, b - bgB);
-      const isCardboard =
-        brightness > 36 &&
-        brightness < 226 &&
-        max - min > 24 &&
-        r >= g * 0.94 &&
-        g >= b * 0.86 &&
-        r > b * 1.16;
-      const isForegroundObject =
-        backgroundDistance > 58 &&
-        brightness > 22 &&
-        brightness < 245 &&
-        !(max - min < 10 && brightness > 205);
-      if (isCardboard || isForegroundObject) {
-        mask[y * width + x] = 1;
-        objectPixels += 1;
-      }
-    }
-  }
-
-  const roiArea = Math.max(1, (endX - startX) * (endY - startY));
-  if (objectPixels > roiArea * 0.004) {
-    return { mask, bounds: { startX, startY, endX, endY }, roiArea };
-  }
-
-  for (let y = startY + 1; y < endY - 1; y += 1) {
-    for (let x = startX + 1; x < endX - 1; x += 1) {
-      const idx = (y * width + x) * 4;
-      const left = idx - 4;
-      const right = idx + 4;
-      const up = idx - width * 4;
-      const down = idx + width * 4;
-      const grayX = Math.abs(data[right] + data[right + 1] + data[right + 2] - data[left] - data[left + 1] - data[left + 2]);
-      const grayY = Math.abs(data[down] + data[down + 1] + data[down + 2] - data[up] - data[up + 1] - data[up + 2]);
-      if (grayX + grayY > 96) {
-        mask[y * width + x] = 1;
-      }
-    }
-  }
-
-  return { mask, bounds: { startX, startY, endX, endY }, roiArea };
-}
-
-function connectedComponents(mask, width, height, bounds, roiArea) {
-  const visited = new Uint8Array(width * height);
-  const boxesFound = [];
-  const minArea = Math.max(160, roiArea * 0.012);
-  const queue = [];
-
-  for (let y = bounds.startY; y < bounds.endY; y += 1) {
-    for (let x = bounds.startX; x < bounds.endX; x += 1) {
-      const seed = y * width + x;
-      if (!mask[seed] || visited[seed]) continue;
-
-      let head = 0;
-      let area = 0;
-      let minX = x;
-      let maxX = x;
-      let minY = y;
-      let maxY = y;
-      queue.length = 0;
-      queue.push(seed);
-      visited[seed] = 1;
-
-      while (head < queue.length) {
-        const current = queue[head];
-        head += 1;
-        const cx = current % width;
-        const cy = Math.floor(current / width);
-        area += 1;
-        minX = Math.min(minX, cx);
-        maxX = Math.max(maxX, cx);
-        minY = Math.min(minY, cy);
-        maxY = Math.max(maxY, cy);
-
-        for (let oy = -1; oy <= 1; oy += 1) {
-          for (let ox = -1; ox <= 1; ox += 1) {
-            if (ox === 0 && oy === 0) continue;
-            const nx = cx + ox;
-            const ny = cy + oy;
-            if (nx < bounds.startX || nx >= bounds.endX || ny < bounds.startY || ny >= bounds.endY) continue;
-            const next = ny * width + nx;
-            if (mask[next] && !visited[next]) {
-              visited[next] = 1;
-              queue.push(next);
-            }
-          }
-        }
-      }
-
-      const boxW = maxX - minX + 1;
-      const boxH = maxY - minY + 1;
-      const fillRatio = area / Math.max(1, boxW * boxH);
-      const roiW = bounds.endX - bounds.startX;
-      const roiH = bounds.endY - bounds.startY;
-      const touchesRoiBorder =
-        minX <= bounds.startX + 3 ||
-        maxX >= bounds.endX - 4 ||
-        minY <= bounds.startY + 3 ||
-        maxY >= bounds.endY - 4;
-      const looksLikeBorderNoise = touchesRoiBorder && (boxW > roiW * 0.45 || boxH > roiH * 0.45);
-      const largeEnoughForCase = boxW > roiW * 0.07 && boxH > roiH * 0.1;
-      if (area >= minArea && largeEnoughForCase && fillRatio > 0.08 && !looksLikeBorderNoise) {
-        const xPct = (minX / width) * 100;
-        const yPct = (minY / height) * 100;
-        const wPct = (boxW / width) * 100;
-        const hPct = (boxH / height) * 100;
-        const centerX = xPct + wPct / 2;
-        const centerY = yPct + hPct / 2;
-        boxesFound.push({
-          x: xPct,
-          y: yPct,
-          w: wPct,
-          h: hPct,
-          z: estimateBoxDepth(area / roiArea, centerX, centerY),
-          color: '#def4a5',
-          source: 'actual-rgb',
-        });
-      }
-    }
-  }
-
-  return boxesFound
-    .sort((a, b) => (b.w * b.h) - (a.w * a.h))
-    .slice(0, 12)
-    .sort((a, b) => (a.y - b.y) || (a.x - b.x))
-    .map((item, index) => ({ ...item, id: index + 1 }));
-}
-
-function buildHighContrastMask(imageData, width, bounds) {
-  const data = imageData.data;
-  const mask = new Uint8Array(width * Math.ceil(data.length / (width * 4)));
-
-  for (let y = bounds.startY; y < bounds.endY; y += 1) {
-    for (let x = bounds.startX; x < bounds.endX; x += 1) {
-      const idx = (y * width + x) * 4;
-      const r = data[idx];
-      const g = data[idx + 1];
-      const b = data[idx + 2];
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      const brightness = (r + g + b) / 3;
-      const darkObject = brightness < 105 && max < 150;
-      const saturatedObject = brightness > 58 && brightness < 235 && max - min > 48 && max > 115;
-      const cardboardYellow = r > 120 && g > 78 && b < 150 && r > b * 1.18 && g > b * 0.92;
-      if (darkObject || saturatedObject || cardboardYellow) {
-        mask[y * width + x] = 1;
-      }
-    }
-  }
-
-  return mask;
-}
-
-function analyzeCameraFrame(video, roi) {
-  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
-    return { boxes: [], imageUrl: '', message: 'Camera frame not ready' };
-  }
-
-  const width = 640;
-  const displayWidth = video.clientWidth || video.videoWidth;
-  const displayHeight = video.clientHeight || video.videoHeight;
-  const height = Math.max(360, Math.round(width * (displayHeight / displayWidth)));
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-  const coverScale = Math.max(width / video.videoWidth, height / video.videoHeight);
-  const sourceWidth = width / coverScale;
-  const sourceHeight = height / coverScale;
-  const sourceX = (video.videoWidth - sourceWidth) / 2;
-  const sourceY = (video.videoHeight - sourceHeight) / 2;
-  ctx.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height);
-
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const { mask, bounds, roiArea } = buildMaskFromImage(imageData, width, height, roi);
-  let boxesFound = connectedComponents(mask, width, height, bounds, roiArea);
-  if (!boxesFound.length) {
-    boxesFound = connectedComponents(buildHighContrastMask(imageData, width, bounds), width, height, bounds, roiArea);
-  }
-
-  return {
-    boxes: boxesFound,
-    imageUrl: canvas.toDataURL('image/jpeg', 0.86),
-    message: boxesFound.length ? `Actual RGB detected ${boxesFound.length} box(es)` : 'Actual RGB found no box in ROI',
-  };
-}
-
 function App() {
   const [view, setView] = useState('vision');
   const [demoMode, setDemoMode] = useState(true);
@@ -322,6 +86,8 @@ function App() {
   const [cameraStream, setCameraStream] = useState(null);
   const [actualBoxes, setActualBoxes] = useState([]);
   const [capturedFrame, setCapturedFrame] = useState('');
+  const [bridgePreviewFrame, setBridgePreviewFrame] = useState('');
+  const cameraStreamRef = useRef(null);
   const videoElementRef = useRef(null);
 
   const mount = useMemo(() => calculateMountingHeight(pallet), [pallet]);
@@ -331,17 +97,25 @@ function App() {
   const selectedBox = detectedBoxes.find((item) => item.id === selectedId) ?? null;
   const candidate = selectedBox ?? (captured ? highestBox : null);
 
-  useEffect(() => {
+  function stopCameraPreview() {
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+    videoElementRef.current = null;
+    setCameraStream(null);
+  }
+
+  function startCameraPreview() {
+    if (cameraStreamRef.current) return () => {};
     let active = true;
     const cameraTimeout = window.setTimeout(() => {
-      if (active && !cameraStream) setCameraStatus('Waiting for camera permission');
+      if (active && !cameraStreamRef.current) setCameraStatus('Waiting for camera permission');
     }, 3500);
 
     setCameraStatus('Requesting RGB preview');
     if (!navigator.mediaDevices?.getUserMedia) {
       window.clearTimeout(cameraTimeout);
       setCameraStatus('Browser camera API unavailable');
-      return;
+      return () => {};
     }
 
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
@@ -351,6 +125,7 @@ function App() {
           stream.getTracks().forEach((track) => track.stop());
           return;
         }
+        cameraStreamRef.current = stream;
         setCameraStream(stream);
         setCameraStatus('RGB preview live');
       })
@@ -363,7 +138,54 @@ function App() {
       active = false;
       window.clearTimeout(cameraTimeout);
     };
-  }, []);
+  }
+
+  useEffect(() => {
+    const cancelPreviewRequest = demoMode ? startCameraPreview() : undefined;
+    return () => {
+      cancelPreviewRequest?.();
+      stopCameraPreview();
+    };
+  }, [demoMode]);
+
+  useEffect(() => {
+    if (demoMode || captured) {
+      setBridgePreviewFrame('');
+      return undefined;
+    }
+
+    let active = true;
+    let timer = 0;
+    stopCameraPreview();
+    setCameraStatus('Requesting RealSense preview');
+
+    async function refreshRealSensePreview() {
+      try {
+        const response = await fetch(REALSENSE_PREVIEW_URL);
+        const result = await response.json();
+        if (!response.ok || !result.ok) {
+          throw new Error(result.message || `RealSense preview returned ${response.status}`);
+        }
+        if (!active) return;
+        setBridgePreviewFrame(result.frame ?? '');
+        setCameraStatus(result.message || 'RealSense preview live');
+      } catch (error) {
+        if (!active) return;
+        setBridgePreviewFrame('');
+        setCameraStatus(`RealSense preview unavailable: ${error.message}`);
+      } finally {
+        if (active) {
+          timer = window.setTimeout(refreshRealSensePreview, 550);
+        }
+      }
+    }
+
+    refreshRealSensePreview();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [demoMode, captured]);
 
   function resetPick() {
     setCaptured(false);
@@ -371,23 +193,49 @@ function App() {
     setSelectedId(null);
     setActualBoxes([]);
     setCapturedFrame('');
+    setBridgePreviewFrame('');
+    if (demoMode) {
+      window.setTimeout(() => startCameraPreview(), 60);
+    }
   }
 
-  function capture() {
-    setCaptured(true);
+  async function capture() {
     setConfirmed(false);
     if (demoMode) {
+      setCaptured(true);
       setActualBoxes([]);
       setCapturedFrame('');
       setSelectedId(chooseHighest(demoDetectedBoxes)?.id ?? null);
       return;
     }
 
-    const result = analyzeCameraFrame(videoElementRef.current, roi);
-    setActualBoxes(result.boxes);
-    setCapturedFrame(result.imageUrl);
-    setCameraStatus(result.message);
-    setSelectedId(chooseHighest(result.boxes)?.id ?? null);
+    setCaptured(true);
+    setActualBoxes([]);
+    setCapturedFrame('');
+    setBridgePreviewFrame('');
+    setSelectedId(null);
+    setCameraStatus('Capturing RealSense depth');
+
+    try {
+      const response = await fetch(REALSENSE_BRIDGE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roi }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) {
+        throw new Error(result.message || `RealSense bridge returned ${response.status}`);
+      }
+      const realBoxes = result.detections ?? [];
+      setActualBoxes(realBoxes);
+      setCapturedFrame(result.frame ?? '');
+      setCameraStatus(result.message || `RealSense depth detected ${realBoxes.length} box(es)`);
+      setSelectedId(result.bestId ?? chooseHighest(realBoxes)?.id ?? null);
+    } catch (error) {
+      setActualBoxes([]);
+      setCapturedFrame('');
+      setCameraStatus(`RealSense depth unavailable: ${error.message}`);
+    }
   }
 
   function nextCandidate() {
@@ -434,7 +282,7 @@ function App() {
             <StatusPill label={cameraStatus} />
             <button className="toggle" onClick={() => { setDemoMode(!demoMode); resetPick(); }}>
               <ToggleLeft size={20} />
-              {demoMode ? 'Demo result on' : 'Actual RGB mode'}
+              {demoMode ? 'Demo result on' : 'RealSense depth mode'}
             </button>
           </div>
         </header>
@@ -457,6 +305,7 @@ function App() {
                   demoMode={demoMode}
                   cameraStream={cameraStream}
                   cameraStatus={cameraStatus}
+                  bridgePreviewFrame={bridgePreviewFrame}
                   videoElementRef={videoElementRef}
                   capturedFrame={capturedFrame}
                   roi={roi}
@@ -477,7 +326,7 @@ function App() {
                 confirmed={confirmed}
                 candidate={candidate}
                 detectedCount={detectedBoxes.length}
-                modeLabel={demoMode ? 'Simulated depth' : 'Actual RGB estimate'}
+                modeLabel={demoMode ? 'Simulated depth' : 'RealSense depth'}
                 onCapture={capture}
                 onNext={nextCandidate}
                 onConfirm={() => captured && candidate && setConfirmed(true)}
@@ -507,6 +356,10 @@ function NavButton({ active, icon, label, onClick }) {
 
 function CandidatePanel({ captured, confirmed, candidate, detectedCount, modeLabel, onCapture, onNext, onConfirm, onRedrag }) {
   const emptyCapture = captured && !candidate;
+  const cameraXyz = candidate?.camera_xyz ?? [Math.round((candidate?.x ?? 0) + (candidate?.w ?? 0) / 2), Math.round((candidate?.y ?? 0) + (candidate?.h ?? 0) / 2), candidate?.z];
+  const robotXyz = candidate?.robot_xyz ?? cameraXyz;
+  const formatXyz = (values) => values?.every((value) => Number.isFinite(Number(value))) ? values.map((value) => Math.round(Number(value))).join(', ') : '--';
+  const dimensions = candidate?.lengthMm && candidate?.widthMm ? `${candidate.lengthMm} x ${candidate.widthMm} mm` : '--';
   return (
     <aside className="candidate-panel">
       <div className="candidate-top">
@@ -524,8 +377,9 @@ function CandidatePanel({ captured, confirmed, candidate, detectedCount, modeLab
       </div>
 
       <div className="coords">
-        <Coord label="Camera XYZ" value={candidate ? `${Math.round(candidate.x + candidate.w / 2)}, ${Math.round(candidate.y + candidate.h / 2)}, ${candidate.z}` : '--'} />
-        <Coord label="Robot XYZ" value={candidate ? `${Math.round(candidate.x + candidate.w / 2)}, ${Math.round(candidate.y + candidate.h / 2)}, ${candidate.z}` : '--'} />
+        <Coord label="Length x Width" value={candidate ? dimensions : '--'} />
+        <Coord label="Camera XYZ" value={candidate ? formatXyz(cameraXyz) : '--'} />
+        <Coord label="Robot XYZ" value={candidate ? formatXyz(robotXyz) : '--'} />
       </div>
 
       <div className="actions">
@@ -545,7 +399,7 @@ function CandidatePanel({ captured, confirmed, candidate, detectedCount, modeLab
   );
 }
 
-function PalletPreview({ captured, selectedId, detectedBoxes, onSelect, demoMode, cameraStream, cameraStatus, videoElementRef, capturedFrame, roi, setRoi }) {
+function PalletPreview({ captured, selectedId, detectedBoxes, onSelect, demoMode, cameraStream, cameraStatus, bridgePreviewFrame, videoElementRef, capturedFrame, roi, setRoi }) {
   const stageRef = useRef(null);
   const videoRef = useRef(null);
   const dragStart = useRef(null);
@@ -611,8 +465,9 @@ function PalletPreview({ captured, selectedId, detectedBoxes, onSelect, demoMode
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
       >
-        {!captured && cameraStream && <video ref={videoRef} className="camera-feed" autoPlay muted playsInline />}
-        {!captured && !cameraStream && <div className="camera-empty">{cameraStatus}. Allow camera access to aim before capture.</div>}
+        {!captured && demoMode && cameraStream && <video ref={videoRef} className="camera-feed" autoPlay muted playsInline />}
+        {!captured && !demoMode && bridgePreviewFrame && <img className="captured-frame" src={bridgePreviewFrame} alt="RealSense preview frame" />}
+        {!captured && ((demoMode && !cameraStream) || (!demoMode && !bridgePreviewFrame)) && <div className="camera-empty">{cameraStatus}. Use RealSense depth mode only when the local bridge is running.</div>}
         {captured && demoMode && <div className="simulation-surface" />}
         {captured && !demoMode && capturedFrame && <img className="captured-frame" src={capturedFrame} alt="Captured camera frame" />}
         {captured && !demoMode && !capturedFrame && <div className="camera-empty">{cameraStatus}</div>}
@@ -647,7 +502,7 @@ function PalletPreview({ captured, selectedId, detectedBoxes, onSelect, demoMode
               }}
                 onClick={() => onSelect(item.id)}
             >
-              <span>Box {item.id} - {demoMode ? 'Z' : 'Z est'} {item.z}mm</span>
+              <span>Box {item.id} - Z {item.z}mm{item.lengthMm && item.widthMm ? ` - ${item.lengthMm}x${item.widthMm}mm` : ''}</span>
             </button>
           );
         })}
@@ -755,7 +610,7 @@ function Metrics({ captured, detectedCount, mount, demoMode }) {
       <Metric label="Min mount Z" value={`${mount.minHeight} mm`} tone="lavender" />
       <Metric label="Recommended Z" value={`${mount.recommendedHeight} mm`} tone="lime" />
       <Metric label="Detected boxes" value={captured ? String(detectedCount) : '0'} tone="graphite" />
-      <Metric label="Decision mode" value={demoMode ? 'Demo shot' : 'Actual RGB'} tone="red" />
+      <Metric label="Decision mode" value={demoMode ? 'Demo shot' : 'RealSense'} tone="red" />
     </section>
   );
 }
